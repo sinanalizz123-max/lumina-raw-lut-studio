@@ -901,7 +901,11 @@ fun EditorScreen(navController: NavController, projectId: String? = null) {
                                 exif.iso?.let { DetailRow("ISO", it) }
                                 exif.shutter?.let { DetailRow("Shutter", it) }
                                 exif.aperture?.let { DetailRow("Aperture", it) }
+                                exif.focalLength?.let { DetailRow("Focal length", it) }
                                 exif.bitsPerSample?.let { DetailRow("Bit depth", it) }
+                                if (exif.hasGps) {
+                                    DetailRow("Location", "Present in source")
+                                }
                             }
                             DetailRow("Preset", current.presetName ?: "No preset")
                             DetailRow(

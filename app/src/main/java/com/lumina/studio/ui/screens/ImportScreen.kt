@@ -5,6 +5,7 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.provider.MediaStore
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -43,6 +44,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavController
@@ -56,6 +58,7 @@ import com.lumina.studio.core.design.theme.LuminaOnSurface
 import com.lumina.studio.core.design.theme.LuminaSectionHeaderTextStyle
 import com.lumina.studio.core.design.theme.LuminaSurfaceContainerLow
 import com.lumina.studio.core.util.ImageFiles
+import com.lumina.studio.core.util.IncomingImages
 import com.lumina.studio.navigation.Routes
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -63,11 +66,30 @@ import com.lumina.studio.navigation.Routes
 fun ImportScreen(navController: NavController, importViewModel: ImportViewModel = viewModel()) {
     val uiState by importViewModel.uiState.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
+    val context = LocalContext.current
 
     val galleryLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.GetContent()
     ) { uri ->
         if (uri != null) importViewModel.importUri(uri)
+    }
+    val photoPickerLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri != null) importViewModel.importUri(uri)
+    }
+    fun launchGallery() {
+        // Android Photo Picker is the primary path (no permission needed).
+        // GetContent stays as the fallback where the system picker is unavailable.
+        if (ActivityResultContracts.PickVisualMedia.isPhotoPickerAvailable(context)) {
+            runCatching {
+                photoPickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+            }.onFailure {
+                runCatching { galleryLauncher.launch("image/*") }
+            }
+        } else {
+            runCatching { galleryLauncher.launch("image/*") }
+        }
     }
     val filesLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
@@ -91,6 +113,19 @@ fun ImportScreen(navController: NavController, importViewModel: ImportViewModel 
                 popUpTo(Routes.IMPORT) { inclusive = true }
             }
             importViewModel.clearNavigation()
+        }
+    }
+
+    // Shared/view intents parked by MainActivity: import the single URI here.
+    // SEND_MULTIPLE imports the first image and notes that batch lands later.
+    LaunchedEffect(Unit) {
+        IncomingImages.pending.collect { shared ->
+            if (shared == null) return@collect
+            val consumed = IncomingImages.consume() ?: return@collect
+            importViewModel.importUri(consumed.primary)
+            if (consumed.total > 1) {
+                runCatching { snackbarHostState.showSnackbar("Only the first image was imported — batch import lands later") }
+            }
         }
     }
 
@@ -132,7 +167,7 @@ fun ImportScreen(navController: NavController, importViewModel: ImportViewModel 
                 }
                 LoadingShimmer(style = LoadingShimmerStyle.List)
             }
-            if (uiState.rawDetected) {
+            if (uiState.rawDetected || uiState.previewOnly) {
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(16.dp),
@@ -141,7 +176,8 @@ fun ImportScreen(navController: NavController, importViewModel: ImportViewModel 
                     )
                 ) {
                     Text(
-                        text = "RAW image detected — opens as embedded preview",
+                        text = if (uiState.rawDetected) "RAW image detected — opens as embedded preview"
+                        else uiState.previewNote ?: "Preview only — editing is limited for this format",
                         modifier = Modifier.padding(16.dp),
                         style = LuminaSectionHeaderTextStyle,
                         color = LuminaOnSurface
@@ -201,6 +237,20 @@ fun ImportScreen(navController: NavController, importViewModel: ImportViewModel 
                                     color = LuminaMuted
                                 )
                             }
+                            exif.focalLength?.let {
+                                Text(
+                                    "Focal length: $it",
+                                    style = LuminaCaptionTextStyle,
+                                    color = LuminaMuted
+                                )
+                            }
+                            if (exif.hasGps) {
+                                Text(
+                                    "Location: present (stripped from exports unless enabled)",
+                                    style = LuminaCaptionTextStyle,
+                                    color = LuminaMuted
+                                )
+                            }
                             exif.bitsPerSample?.let {
                                 Text(
                                     "Bits per sample: $it",
@@ -226,7 +276,7 @@ fun ImportScreen(navController: NavController, importViewModel: ImportViewModel 
                 icon = Icons.Filled.PhotoLibrary,
                 title = "Gallery",
                 subtitle = "Pick from your photos",
-                onClick = { galleryLauncher.launch("image/*") }
+                onClick = { launchGallery() }
             )
             ImportSourceTile(
                 icon = Icons.Filled.FolderOpen,

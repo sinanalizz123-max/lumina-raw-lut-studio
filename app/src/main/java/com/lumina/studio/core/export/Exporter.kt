@@ -65,6 +65,7 @@ data class ExportSettings(
     val resolutionMode: ResolutionMode = ResolutionMode.ORIGINAL,
     val customMaxDim: Int = 2048,
     val preserveExif: Boolean = true,
+    val includeLocation: Boolean = false,
     val colorSpace: ExportColorSpace = ExportColorSpace.SRGB
 ) {
     fun effectiveQuality(): Int = when (qualityPreset) {
@@ -223,7 +224,7 @@ object Exporter {
             val tmp = File.createTempFile("lumina_export_", ".jpg", context.cacheDir)
             try {
                 tmp.writeBytes(jpegBytes)
-                copyExifAttributes(srcFile.absolutePath, tmp.absolutePath)
+                copyExifAttributes(srcFile.absolutePath, tmp.absolutePath, settings.includeLocation)
                 tmp.readBytes()
             } finally {
                 tmp.delete()
@@ -233,13 +234,28 @@ object Exporter {
         }
     }
 
-    private fun copyExifAttributes(srcPath: String, dstPath: String) {
+    private fun copyExifAttributes(srcPath: String, dstPath: String, includeLocation: Boolean) {
         val src = ExifInterface(srcPath)
         val dst = ExifInterface(dstPath)
         for (tag in EXIF_TAGS) {
+            if (!includeLocation && tag in GPS_TAGS) continue
             try {
                 src.getAttribute(tag)?.let { dst.setAttribute(tag, it) }
             } catch (_: Exception) {
+            }
+        }
+        // Displayed pixels are already EXIF-normalized at decode, so exported
+        // files must always declare orientation 1 (normal) to avoid double rotation.
+        try {
+            dst.setAttribute(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL.toString())
+        } catch (_: Exception) {
+        }
+        if (!includeLocation) {
+            for (tag in GPS_TAGS) {
+                try {
+                    dst.setAttribute(tag, null)
+                } catch (_: Exception) {
+                }
             }
         }
         try {
@@ -424,6 +440,17 @@ object Exporter {
         out.writeBytes(bytes)
         return Uri.fromFile(out)
     }
+
+    private val GPS_TAGS = setOf(
+        ExifInterface.TAG_GPS_LATITUDE,
+        ExifInterface.TAG_GPS_LATITUDE_REF,
+        ExifInterface.TAG_GPS_LONGITUDE,
+        ExifInterface.TAG_GPS_LONGITUDE_REF,
+        ExifInterface.TAG_GPS_ALTITUDE,
+        ExifInterface.TAG_GPS_ALTITUDE_REF,
+        ExifInterface.TAG_GPS_TIMESTAMP,
+        ExifInterface.TAG_GPS_DATESTAMP
+    )
 
     private val EXIF_TAGS = arrayOf(
         ExifInterface.TAG_ORIENTATION,

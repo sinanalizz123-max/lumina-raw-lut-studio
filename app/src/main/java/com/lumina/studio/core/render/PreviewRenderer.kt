@@ -17,6 +17,7 @@ import com.lumina.studio.core.edit.MaskTool
 import com.lumina.studio.core.edit.StepKey
 import com.lumina.studio.core.lut.LutCube
 import com.lumina.studio.core.lut.LutRenderer
+import com.lumina.studio.core.util.ImageOrientation
 import kotlin.math.cos
 import kotlin.math.pow
 import kotlin.math.sin
@@ -826,7 +827,15 @@ object PreviewRenderer {
                 inSampleSize = sample
                 inPreferredConfig = Bitmap.Config.ARGB_8888
             }
-            BitmapFactory.decodeFile(filePath, opts)
+            val decoded = BitmapFactory.decodeFile(filePath, opts) ?: return null
+            // EXIF orientation chokepoint: pixels are normalized to orientation 1
+            // here so masks/crop/zoom-tile/export all operate on DISPLAYED pixels.
+            // The stored original file is never rewritten.
+            try {
+                ImageOrientation.normalizeBitmap(decoded, ImageOrientation.orientationOfPath(filePath))
+            } catch (_: Exception) {
+                decoded
+            }
         } catch (_: Exception) {
             null
         }

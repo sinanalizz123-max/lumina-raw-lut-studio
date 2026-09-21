@@ -9,15 +9,11 @@ import java.util.Locale
 
 object ImageFiles {
 
-    val RAW_EXTENSIONS = setOf("dng", "cr2", "cr3", "nef", "nrw", "arw", "raf", "rw2", "orf", "pef", "srw")
+    val RAW_EXTENSIONS: Set<String> = FormatCapabilities.RAW_EXTENSIONS
 
-    val SUPPORTED_EXTENSIONS = setOf(
-        "jpg", "jpeg", "png", "webp", "tiff", "tif",
-        "heic", "heif", "avif", "bmp", "gif",
-        "dng", "cr2", "cr3", "nef", "nrw", "arw", "raf", "rw2", "orf", "pef", "srw"
-    )
+    val SUPPORTED_EXTENSIONS: Set<String> = FormatCapabilities.SUPPORTED_EXTENSIONS
 
-    const val FORMAT_FOOTER = "RAW / DNG / JPEG / PNG / WebP / TIFF / HEIC / AVIF / BMP / GIF"
+    val FORMAT_FOOTER: String get() = FormatCapabilities.FOOTER
 
     fun extensionOf(displayName: String?): String {
         if (displayName.isNullOrBlank()) return ""
@@ -51,15 +47,11 @@ object ImageFiles {
 
     fun isRaw(extension: String): Boolean = extension.lowercase(Locale.US) in RAW_EXTENSIONS
 
-    fun isSupported(extension: String, mime: String?): Boolean {
-        val ext = extension.lowercase(Locale.US)
-        if (ext in SUPPORTED_EXTENSIONS) return true
-        if (ext.isEmpty() && mime != null) {
-            val m = mime.lowercase(Locale.US)
-            return m.startsWith("image/")
-        }
-        return false
-    }
+    fun isSupported(extension: String, mime: String?): Boolean =
+        FormatCapabilities.isSupported(extension, mime)
+
+    fun capabilityStatus(extension: String, mime: String?): CapabilityStatus =
+        FormatCapabilities.statusOf(extension, mime)
 
     fun typeBadge(extension: String, mime: String?): String {
         val ext = extension.lowercase(Locale.US)
@@ -90,7 +82,11 @@ object ImageFiles {
         return try {
             val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeFile(file.absolutePath, opts)
-            Bounds(opts.outWidth.coerceAtLeast(0), opts.outHeight.coerceAtLeast(0))
+            val rawW = opts.outWidth.coerceAtLeast(0)
+            val rawH = opts.outHeight.coerceAtLeast(0)
+            if (rawW <= 0 || rawH <= 0) return Bounds(0, 0)
+            val (dw, dh) = ImageOrientation.orientedBounds(file, rawW, rawH)
+            Bounds(dw, dh)
         } catch (_: Exception) {
             Bounds(0, 0)
         }

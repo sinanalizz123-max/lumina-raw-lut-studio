@@ -35,6 +35,8 @@ import com.lumina.studio.core.lut.BuiltInPresets
 import com.lumina.studio.core.lut.LutCube
 import com.lumina.studio.core.lut.LutRegistry
 import com.lumina.studio.core.render.PreviewRenderer
+import com.lumina.studio.core.util.ExifOrientation
+import com.lumina.studio.core.util.ImageOrientation
 import com.lumina.studio.ui.editor.EditorTool
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
@@ -153,6 +155,7 @@ class EditorViewModel(application: Application, private val projectId: String?) 
     private var regionSourceKey: String? = null
     private var regionWidth = 0
     private var regionHeight = 0
+    private var regionOrientation = 1
     private var lastViewLeft = 0f
     private var lastViewTop = 0f
     private var lastViewRight = 0f
@@ -309,7 +312,10 @@ class EditorViewModel(application: Application, private val projectId: String?) 
             val file = File(pathOrUri)
             if (file.exists()) {
                 val opts = BitmapFactory.Options().apply { inPreferredConfig = Bitmap.Config.ARGB_8888 }
-                BitmapFactory.decodeFile(file.absolutePath, opts)
+                val decoded = BitmapFactory.decodeFile(file.absolutePath, opts) ?: return null
+                // Same chokepoint as previews: normalize to orientation 1 so edits,
+                // crop and export all see DISPLAYED pixels. Original file untouched.
+                ImageOrientation.normalizeBitmap(decoded, ImageOrientation.orientationOf(file))
             } else {
                 val context = getApplication<Application>()
                 context.contentResolver.openInputStream(pathOrUri.toUri())?.use { input ->
@@ -1100,10 +1106,14 @@ class EditorViewModel(application: Application, private val projectId: String?) 
             _zoomEnhancing.value = false
             return
         }
-        val leftPx = (l * w).toInt().coerceIn(0, w - 1)
-        val topPx = (t * h).toInt().coerceIn(0, h - 1)
-        val rightPx = (r * w).toInt().coerceIn(1, w)
-        val bottomPx = (b * h).toInt().coerceIn(1, h)
+        // Viewport fractions are DISPLAYED (orientation-normalized) coordinates.
+        // Map them back to the decoder's RAW pixel space, then re-orient the
+        // decoded tile so it matches the preview frame.
+        val rawRect = ExifOrientation.mapDisplayRectToRaw(l, t, r, b, w, h, regionOrientation)
+        val leftPx = rawRect[0]
+        val topPx = rawRect[1]
+        val rightPx = rawRect[2]
+        val bottomPx = rawRect[3]
         if (rightPx <= leftPx || bottomPx <= topPx) {
             _zoomEnhancing.value = false
             return
@@ -1117,12 +1127,18 @@ class EditorViewModel(application: Application, private val projectId: String?) 
             inPreferredConfig = Bitmap.Config.ARGB_8888
         }
         val decodeStartMs = SystemClock.elapsedRealtime()
-        val raw: Bitmap? = try {
+        val decodedRegion: Bitmap? = try {
             decoder.decodeRegion(rect, opts)
         } catch (_: Exception) {
             null
         } catch (_: OutOfMemoryError) {
             null
+        }
+        val raw: Bitmap? = try {
+            if (decodedRegion == null) null
+            else ImageOrientation.normalizeBitmap(decodedRegion, regionOrientation)
+        } catch (_: Exception) {
+            decodedRegion
         }
         val decodeMs = SystemClock.elapsedRealtime() - decodeStartMs
         currentCoroutineContext().ensureActive()
@@ -1217,8 +1233,16 @@ class EditorViewModel(application: Application, private val projectId: String?) 
         }
         regionDecoder = created
         regionSourceKey = source
+        // Decoder dimensions are RAW pixels; viewport math uses DISPLAYED pixels
+        // and maps back via ExifOrientation.mapDisplayRectToRaw per tile.
         regionWidth = dw
         regionHeight = dh
+        regionOrientation = try {
+            val file = File(source)
+            if (file.exists()) ImageOrientation.orientationOf(file) else 1
+        } catch (_: Exception) {
+            1
+        }
         return created
     }
 
@@ -1226,6 +1250,7 @@ class EditorViewModel(application: Application, private val projectId: String?) 
         regionSourceKey = null
         regionWidth = 0
         regionHeight = 0
+        regionOrientation = 1
         val d = regionDecoder
         regionDecoder = null
         if (d != null) {

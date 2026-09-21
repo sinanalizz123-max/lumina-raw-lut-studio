@@ -13,6 +13,7 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
@@ -40,6 +41,8 @@ import com.lumina.studio.ui.screens.ProjectDetailScreen
 import com.lumina.studio.ui.screens.ProjectsScreen
 import com.lumina.studio.ui.screens.SettingsScreen
 import com.lumina.studio.ui.screens.StorageScreen
+import com.lumina.studio.core.util.IncomingImages
+import kotlinx.coroutines.flow.filterNotNull
 
 private data class Tab(val route: String, val label: String, val icon: ImageVector)
 
@@ -56,6 +59,19 @@ fun AppNav() {
     val backStack by navController.currentBackStackEntryAsState()
     val currentDestination = backStack?.destination
     val showBottomBar = TABS.any { it.route == currentDestination?.route }
+
+    // Shared/view intents (VIEW/SEND/SEND_MULTIPLE image/*) route into Import.
+    // Routes unchanged: MainActivity (singleTop) parks the URI in
+    // IncomingImages.pending; we navigate to IMPORT and let ImportScreen consume it.
+    LaunchedEffect(navController) {
+        IncomingImages.pending.filterNotNull().collect {
+            runCatching {
+                navController.navigate(Routes.IMPORT) {
+                    launchSingleTop = true
+                }
+            }
+        }
+    }
 
     Scaffold(
         bottomBar = {

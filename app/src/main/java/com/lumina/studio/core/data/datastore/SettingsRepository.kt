@@ -24,6 +24,7 @@ class SettingsRepository(private val context: Context) {
         val EXPORT_RESOLUTION = stringPreferencesKey("export_resolution")
         val EXPORT_COLOR_SPACE = stringPreferencesKey("export_color_space")
         val EXPORT_INCLUDE_METADATA = booleanPreferencesKey("export_include_metadata")
+        val EXPORT_INCLUDE_LOCATION = booleanPreferencesKey("export_include_location")
         val PRESET_LIBRARY_PATH = stringPreferencesKey("preset_library_path")
         val HAPTIC_ENABLED = booleanPreferencesKey("haptic_enabled")
         val ANIMATIONS_ENABLED = booleanPreferencesKey("animations_enabled")
@@ -59,6 +60,9 @@ class SettingsRepository(private val context: Context) {
 
     val exportIncludeMetadata: Flow<Boolean> = context.settingsStore.data
         .map { prefs -> prefs[Keys.EXPORT_INCLUDE_METADATA] ?: true }
+
+    val exportIncludeLocation: Flow<Boolean> = context.settingsStore.data
+        .map { prefs -> prefs[Keys.EXPORT_INCLUDE_LOCATION] ?: false }
 
     val presetLibraryPath: Flow<String> = context.settingsStore.data
         .map { prefs -> prefs[Keys.PRESET_LIBRARY_PATH] ?: "" }
@@ -110,6 +114,10 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun setExportIncludeMetadata(enabled: Boolean) {
         context.settingsStore.edit { prefs -> prefs[Keys.EXPORT_INCLUDE_METADATA] = enabled }
+    }
+
+    suspend fun setExportIncludeLocation(enabled: Boolean) {
+        context.settingsStore.edit { prefs -> prefs[Keys.EXPORT_INCLUDE_LOCATION] = enabled }
     }
 
     suspend fun setPresetLibraryPath(value: String) {

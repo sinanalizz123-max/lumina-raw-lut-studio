@@ -58,6 +58,7 @@ fun SettingsScreen(navController: NavController, settingsViewModel: SettingsView
     val exportResolution by settingsViewModel.exportResolution.collectAsState()
     val exportColorSpace by settingsViewModel.exportColorSpace.collectAsState()
     val includeMetadata by settingsViewModel.exportIncludeMetadata.collectAsState()
+    val includeLocation by settingsViewModel.exportIncludeLocation.collectAsState()
     val libraryPath by settingsViewModel.presetLibraryPath.collectAsState()
     val cacheSize by settingsViewModel.cacheSize.collectAsState()
     val cacheMessage by settingsViewModel.cacheMessage.collectAsState()
@@ -178,6 +179,16 @@ fun SettingsScreen(navController: NavController, settingsViewModel: SettingsView
                     title = "Include metadata",
                     checked = includeMetadata,
                     onCheckedChange = { settingsViewModel.setExportIncludeMetadata(it) }
+                )
+                SettingsSwitchRow(
+                    title = "Include location metadata on export/share",
+                    checked = includeLocation,
+                    onCheckedChange = { settingsViewModel.setExportIncludeLocation(it) }
+                )
+                Text(
+                    "Off by default for privacy — GPS tags are stripped from exports when off.",
+                    style = LuminaCaptionTextStyle,
+                    color = LuminaMuted
                 )
             }
 

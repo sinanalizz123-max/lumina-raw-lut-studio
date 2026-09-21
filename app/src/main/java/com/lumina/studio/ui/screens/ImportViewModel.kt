@@ -9,8 +9,10 @@ import com.lumina.studio.core.data.local.DatabaseProvider
 import com.lumina.studio.core.data.local.EditHistoryLog
 import com.lumina.studio.core.data.local.Project
 import com.lumina.studio.core.data.store.ProjectStore
+import com.lumina.studio.core.util.CapabilityStatus
 import com.lumina.studio.core.util.ExifInfo
 import com.lumina.studio.core.util.ExifReader
+import com.lumina.studio.core.util.FormatCapabilities
 import com.lumina.studio.core.util.ImageFiles
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -26,6 +28,8 @@ data class ImportUiState(
     val isImporting: Boolean = false,
     val errorMessage: String? = null,
     val rawDetected: Boolean = false,
+    val previewOnly: Boolean = false,
+    val previewNote: String? = null,
     val lastExif: ExifInfo? = null,
     val lastProjectId: String? = null
 )
@@ -45,7 +49,7 @@ class ImportViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun clearNavigation() {
-        _uiState.value = _uiState.value.copy(lastProjectId = null, rawDetected = false, lastExif = null)
+        _uiState.value = _uiState.value.copy(lastProjectId = null, rawDetected = false, previewOnly = false, previewNote = null, lastExif = null)
     }
 
     fun importUri(uri: Uri) {
@@ -60,6 +64,8 @@ class ImportViewModel(application: Application) : AndroidViewModel(application) 
                     _uiState.value = _uiState.value.copy(
                         isImporting = false,
                         rawDetected = result.isRaw,
+                        previewOnly = result.previewOnly,
+                        previewNote = result.previewNote,
                         lastExif = result.exif,
                         lastProjectId = result.projectId
                     )
@@ -104,6 +110,8 @@ class ImportViewModel(application: Application) : AndroidViewModel(application) 
                     _uiState.value = _uiState.value.copy(
                         isImporting = false,
                         rawDetected = false,
+                        previewOnly = false,
+                        previewNote = null,
                         lastExif = result.exif,
                         lastProjectId = result.projectId
                     )
@@ -116,7 +124,13 @@ class ImportViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     private sealed interface ImportResult {
-        data class Success(val projectId: String, val isRaw: Boolean, val exif: ExifInfo) : ImportResult
+        data class Success(
+            val projectId: String,
+            val isRaw: Boolean,
+            val exif: ExifInfo,
+            val previewOnly: Boolean = false,
+            val previewNote: String? = null
+        ) : ImportResult
         data class Error(val message: String) : ImportResult
     }
 
@@ -139,17 +153,25 @@ class ImportViewModel(application: Application) : AndroidViewModel(application) 
                 "image/bmp" -> "bmp"
                 "image/gif" -> "gif"
                 "image/x-adobe-dng" -> "dng"
+                "image/x-dng" -> "dng"
                 "image/x-canon-cr2" -> "cr2"
+                "image/x-canon-cr3" -> "cr3"
+                "image/x-nikon-nef" -> "nef"
+                "image/x-sony-arw" -> "arw"
                 else -> ""
             }
         }
-        if (!ImageFiles.isSupported(extension, mime)) {
-            val label = extension.ifEmpty { mime ?: "unknown" }
-            return ImportResult.Error("Unsupported format: $label. Supported: JPG, PNG, WebP, TIFF, HEIC, AVIF, BMP, GIF, DNG and RAW.")
+        val status = FormatCapabilities.statusOf(extension, mime)
+        if (status == CapabilityStatus.UNSUPPORTED) {
+            return ImportResult.Error(FormatCapabilities.unsupportedMessage(extension, mime))
         }
+        val previewOnly = status == CapabilityStatus.PREVIEW_ONLY
+        val previewNote = if (previewOnly) FormatCapabilities.capabilityOf(extension)?.reason else null
         val projectId = UUID.randomUUID().toString()
         val cached: File = ProjectStore.copyUriToOriginal(context, projectId, uri, displayName)
             ?: return ImportResult.Error("Could not read that file.")
+        // decodeBounds returns DISPLAYED (orientation-normalized) dimensions,
+        // matching what PreviewRenderer.decodePreview renders downstream.
         val bounds = ImageFiles.decodeBounds(cached)
         val exif = ExifReader.read(cached)
         val isRaw = ImageFiles.isRaw(extension)
@@ -167,6 +189,6 @@ class ImportViewModel(application: Application) : AndroidViewModel(application) 
         )
         database.projectDao().upsert(project)
         EditHistoryLog.log(database, project.id, EditHistoryLog.IMPORT)
-        return ImportResult.Success(project.id, isRaw, exif)
+        return ImportResult.Success(project.id, isRaw, exif, previewOnly, previewNote)
     }
 }

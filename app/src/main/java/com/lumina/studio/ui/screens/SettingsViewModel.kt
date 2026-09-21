@@ -29,6 +29,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     val exportResolution = repository.exportResolution.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "Original")
     val exportColorSpace = repository.exportColorSpace.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "sRGB")
     val exportIncludeMetadata = repository.exportIncludeMetadata.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
+    val exportIncludeLocation = repository.exportIncludeLocation.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
     val presetLibraryPath = repository.presetLibraryPath.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "")
     val hapticEnabled = repository.hapticEnabled.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
     val animationsEnabled = repository.animationsEnabled.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
@@ -74,6 +75,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     fun setExportResolution(value: String) = launch { repository.setExportResolution(value) }
     fun setExportColorSpace(value: String) = launch { repository.setExportColorSpace(value) }
     fun setExportIncludeMetadata(value: Boolean) = launch { repository.setExportIncludeMetadata(value) }
+    fun setExportIncludeLocation(value: Boolean) = launch { repository.setExportIncludeLocation(value) }
     fun setPresetLibraryPath(value: String) = launch { repository.setPresetLibraryPath(value) }
     fun setHapticEnabled(value: Boolean) = launch { repository.setHapticEnabled(value) }
     fun setAnimationsEnabled(value: Boolean) = launch { repository.setAnimationsEnabled(value) }

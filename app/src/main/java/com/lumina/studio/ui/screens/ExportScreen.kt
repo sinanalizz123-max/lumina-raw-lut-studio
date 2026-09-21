@@ -157,7 +157,17 @@ fun ExportScreen(navController: NavController, projectId: String? = null) {
             } else {
                 mapped
             }
-            settings = settings.copy(colorSpace = coerced)
+            val includeLocation = try {
+                settingsRepository.exportIncludeLocation.first()
+            } catch (_: Exception) {
+                false
+            }
+            val preserveExif = try {
+                settingsRepository.exportIncludeMetadata.first()
+            } catch (_: Exception) {
+                true
+            }
+            settings = settings.copy(colorSpace = coerced, includeLocation = includeLocation, preserveExif = preserveExif)
         } catch (_: Exception) {
         }
     }
@@ -669,6 +679,31 @@ fun ExportScreen(navController: NavController, projectId: String? = null) {
                     }
                     Text(
                         "Copies camera metadata from the source into JPEG exports when available.",
+                        style = LuminaCaptionTextStyle,
+                        color = LuminaMuted
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "Include location metadata",
+                            modifier = Modifier.weight(1f),
+                            style = LuminaSectionHeaderTextStyle,
+                            color = LuminaOnSurface
+                        )
+                        Switch(
+                            checked = settings.includeLocation,
+                            onCheckedChange = {
+                                settings = settings.copy(includeLocation = it)
+                                scope.launch {
+                                    runCatching { settingsRepository.setExportIncludeLocation(it) }
+                                }
+                            }
+                        )
+                    }
+                    Text(
+                        "Off by default for privacy — GPS tags are stripped from exports and shares when off.",
                         style = LuminaCaptionTextStyle,
                         color = LuminaMuted
                     )

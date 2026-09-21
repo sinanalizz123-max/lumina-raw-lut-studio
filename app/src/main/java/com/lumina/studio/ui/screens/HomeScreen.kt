@@ -5,6 +5,7 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.provider.MediaStore
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
@@ -74,6 +75,8 @@ import com.lumina.studio.core.design.theme.LuminaSectionHeaderTextStyle
 import com.lumina.studio.core.design.theme.LuminaSurfaceContainerHigh
 import com.lumina.studio.core.design.theme.LuminaSurfaceContainerLow
 import com.lumina.studio.core.util.ImageFiles
+import com.lumina.studio.core.util.FormatCapabilities
+import com.lumina.studio.core.util.CapabilityStatus
 import com.lumina.studio.core.util.timeAgo
 import com.lumina.studio.navigation.Routes
 import kotlinx.coroutines.Dispatchers
@@ -125,10 +128,7 @@ fun HomeScreen(navController: NavController, homeViewModel: HomeViewModel = view
     val snackbarHostState = remember { SnackbarHostState() }
     val recent by homeViewModel.recentProjects.collectAsState()
 
-    val galleryLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.GetContent()
-    ) { uri ->
-        if (uri == null) return@rememberLauncherForActivityResult
+    fun importPickedUri(uri: android.net.Uri) {
         scope.launch {
             val projectId = withContext(Dispatchers.IO) {
                 runCatching {
@@ -144,10 +144,17 @@ fun HomeScreen(navController: NavController, homeViewModel: HomeViewModel = view
                             "image/png" -> "png"
                             "image/webp" -> "webp"
                             "image/tiff" -> "tiff"
+                            "image/x-tiff" -> "tiff"
+                            "image/heic" -> "heic"
+                            "image/heif" -> "heif"
+                            "image/avif" -> "avif"
+                            "image/bmp" -> "bmp"
+                            "image/gif" -> "gif"
+                            "image/x-adobe-dng" -> "dng"
                             else -> ""
                         }
                     }
-                    if (!ImageFiles.isSupported(ext, mime)) return@runCatching null
+                    if (FormatCapabilities.statusOf(ext, mime) == CapabilityStatus.UNSUPPORTED) return@runCatching null
                     val projectId = UUID.randomUUID().toString()
                     val file = ProjectStore.copyUriToOriginal(appContext, projectId, uri, displayName)
                         ?: return@runCatching null
@@ -183,6 +190,32 @@ fun HomeScreen(navController: NavController, homeViewModel: HomeViewModel = view
             } else {
                 scope.launch { snackbarHostState.showSnackbar("Unsupported format") }
             }
+        }
+    }
+
+    val galleryLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        importPickedUri(uri)
+    }
+
+    val photoPickerLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickVisualMedia()
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        importPickedUri(uri)
+    }
+
+    fun launchGallery() {
+        if (ActivityResultContracts.PickVisualMedia.isPhotoPickerAvailable(context)) {
+            runCatching {
+                photoPickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+            }.onFailure {
+                runCatching { galleryLauncher.launch("image/*") }
+            }
+        } else {
+            runCatching { galleryLauncher.launch("image/*") }
         }
     }
 
@@ -283,7 +316,7 @@ fun HomeScreen(navController: NavController, homeViewModel: HomeViewModel = view
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 OutlinedButton(
-                    onClick = { galleryLauncher.launch("image/*") },
+                    onClick = { launchGallery() },
                     modifier = Modifier
                         .weight(1f)
                         .heightIn(min = 48.dp)
