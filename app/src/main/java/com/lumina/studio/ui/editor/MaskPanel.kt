@@ -11,7 +11,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Brush
+import androidx.compose.material.icons.filled.Contrast
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Gradient
+import androidx.compose.material.icons.filled.Palette
+import androidx.compose.material.icons.filled.RadioButtonChecked
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.Card
@@ -25,6 +30,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
 import com.lumina.studio.core.design.components.CategoryChip
 import com.lumina.studio.core.design.components.ProSlider
@@ -37,8 +43,18 @@ import com.lumina.studio.core.design.theme.LuminaSurfaceContainerHigh
 import com.lumina.studio.core.design.theme.LuminaSurfaceContainerLow
 import com.lumina.studio.core.edit.EditMask
 import com.lumina.studio.core.edit.EditParams
+import com.lumina.studio.core.edit.MaskOp
 import com.lumina.studio.core.edit.MaskTool
 import kotlin.math.roundToInt
+
+private fun maskTypeIcon(tool: MaskTool): ImageVector = when (tool) {
+    MaskTool.BRUSH -> Icons.Filled.Brush
+    MaskTool.ERASER -> Icons.Filled.Contrast
+    MaskTool.LINEAR -> Icons.Filled.Gradient
+    MaskTool.RADIAL -> Icons.Filled.RadioButtonChecked
+    MaskTool.COLOR -> Icons.Filled.Palette
+    MaskTool.LUMINANCE -> Icons.Filled.Contrast
+}
 
 @Composable
 fun MaskPanel(
@@ -61,7 +77,18 @@ fun MaskPanel(
     onTemperature: (String, Float) -> Unit,
     onToggleOverlay: (Boolean) -> Unit,
     onResetAll: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onOp: (String, MaskOp) -> Unit = { _, _ -> },
+    onSaturation: (String, Float) -> Unit = { _, _ -> },
+    onClarity: (String, Float) -> Unit = { _, _ -> },
+    onBlur: (String, Float) -> Unit = { _, _ -> },
+    onHueCenter: (String, Float) -> Unit = { _, _ -> },
+    onHueRange: (String, Float) -> Unit = { _, _ -> },
+    onLumaLo: (String, Float) -> Unit = { _, _ -> },
+    onLumaHi: (String, Float) -> Unit = { _, _ -> },
+    onLumaFeather: (String, Float) -> Unit = { _, _ -> },
+    maskSampleArmedId: String? = null,
+    onArmSample: (String?) -> Unit = {}
 ) {
     val selected = params.masks.firstOrNull { it.id == selectedMaskId } ?: params.masks.lastOrNull()
     val maskCardShape = RoundedCornerShape(16.dp)
@@ -107,13 +134,14 @@ fun MaskPanel(
             text = if (params.masks.size >= EditParams.MAX_MASKS)
                 "Limit reached (${params.masks.size}/${EditParams.MAX_MASKS}) — delete a mask to add another. Tapping a tool selects it."
             else
-                "Add up to ${EditParams.MAX_MASKS} masks in v1. Tap a tool to add; tap a row to select.",
+                "Add up to ${EditParams.MAX_MASKS} masks. Tap a tool to add; tap a row to select. " +
+                    "5–6 masks may exceed the preview budget on low-end devices.",
             style = LuminaCaptionTextStyle,
             color = LuminaMuted
         )
         if (params.masks.isEmpty()) {
             Text(
-                text = "No masks yet. Add a Brush, Linear or Radial mask to grade locally (exposure + temperature only in v1).",
+                text = "No masks yet. Add a Brush, Linear, Radial, Color-range or Luma-range mask to grade locally.",
                 style = LuminaCaptionTextStyle,
                 color = LuminaMuted
             )
@@ -139,14 +167,25 @@ fun MaskPanel(
                             .padding(horizontal = 12.dp, vertical = 4.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Column(modifier = Modifier.weight(1f)) {
+                        Icon(
+                            maskTypeIcon(mask.tool),
+                            contentDescription = null,
+                            tint = LuminaOnSurface
+                        )
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(horizontal = 8.dp)
+                        ) {
                             Text(
-                                text = "${mask.tool.label} • ${(mask.opacity * 100f).roundToInt()}% • ${if (mask.visible) "visible" else "hidden"}",
+                                text = "${mask.tool.label} • ${mask.op.label} • ${(mask.opacity * 100f).roundToInt()}% • ${if (mask.visible) "visible" else "hidden"}",
                                 style = LuminaSectionHeaderTextStyle,
                                 color = LuminaOnSurface
                             )
                             Text(
-                                text = "exp ${formatMaskExp(mask.exposure)} • temp ${formatMaskTemp(mask.temperature)}${if (mask.inverted) " • inverted" else ""}",
+                                text = "exp ${formatMaskExp(mask.exposure)} • temp ${formatMaskTemp(mask.temperature)}" +
+                                    " • sat ${formatMaskTemp(mask.saturation)} • cla ${formatMaskTemp(mask.clarity)}" +
+                                    (if (mask.inverted) " • inverted" else ""),
                                 style = LuminaCaptionTextStyle,
                                 color = LuminaMuted
                             )
@@ -189,6 +228,26 @@ fun MaskPanel(
         )
         selected?.let { mask ->
             val id = mask.id
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                MaskOp.entries.forEach { op ->
+                    CategoryChip(
+                        label = op.label,
+                        selected = mask.op == op,
+                        onClick = { onOp(id, op) }
+                    )
+                }
+            }
+            Text(
+                text = "Combine against previous masks in order: Add unions, Subtract erases, Intersect keeps overlap.",
+                style = LuminaCaptionTextStyle,
+                color = LuminaMuted
+            )
             when (mask.tool) {
                 MaskTool.BRUSH, MaskTool.ERASER -> {
                     ProSlider(
@@ -262,6 +321,66 @@ fun MaskPanel(
                         displayValue = "${(mask.position * 100f).roundToInt()}%"
                     )
                 }
+                MaskTool.COLOR -> {
+                    Text(
+                        text = "Color range selects by hue across the frame (eyedropper seeds the center).",
+                        style = LuminaCaptionTextStyle,
+                        color = LuminaMuted
+                    )
+                    TextButton(
+                        onClick = {
+                            onArmSample(if (maskSampleArmedId == id) null else id)
+                        },
+                        modifier = Modifier.heightIn(min = 48.dp)
+                    ) {
+                        Text(
+                            if (maskSampleArmedId == id) "Tap photo to sample… (tap to cancel)"
+                            else "Pick from photo"
+                        )
+                    }
+                    ProSlider(
+                        label = "Hue center",
+                        value = mask.hueCenter,
+                        onValueChange = { onHueCenter(id, it) },
+                        valueRange = 0f..360f,
+                        displayValue = "${mask.hueCenter.roundToInt()}°"
+                    )
+                    ProSlider(
+                        label = "Hue range",
+                        value = mask.hueRange,
+                        onValueChange = { onHueRange(id, it) },
+                        valueRange = 10f..180f,
+                        displayValue = "${mask.hueRange.roundToInt()}°"
+                    )
+                }
+                MaskTool.LUMINANCE -> {
+                    Text(
+                        text = "Luma range selects by brightness across the frame.",
+                        style = LuminaCaptionTextStyle,
+                        color = LuminaMuted
+                    )
+                    ProSlider(
+                        label = "Luma lo",
+                        value = mask.lumaLo * 100f,
+                        onValueChange = { onLumaLo(id, it / 100f) },
+                        valueRange = 0f..100f,
+                        displayValue = "${(mask.lumaLo * 100f).roundToInt()}%"
+                    )
+                    ProSlider(
+                        label = "Luma hi",
+                        value = mask.lumaHi * 100f,
+                        onValueChange = { onLumaHi(id, it / 100f) },
+                        valueRange = 0f..100f,
+                        displayValue = "${(mask.lumaHi * 100f).roundToInt()}%"
+                    )
+                    ProSlider(
+                        label = "Luma feather",
+                        value = mask.lumaFeather * 100f,
+                        onValueChange = { onLumaFeather(id, it / 100f) },
+                        valueRange = 0f..100f,
+                        displayValue = "${(mask.lumaFeather * 100f).roundToInt()}%"
+                    )
+                }
             }
             ProSlider(
                 label = "Feather",
@@ -271,11 +390,29 @@ fun MaskPanel(
                 displayValue = "${(mask.feather * 100f).roundToInt()}%"
             )
             ProSlider(
+                label = "Blur (alpha)",
+                value = mask.blur,
+                onValueChange = { onBlur(id, it) },
+                valueRange = 0f..EditMask.MAX_BLUR,
+                displayValue = if (mask.blur <= 0.05f) "Off" else "${mask.blur.roundToInt()}"
+            )
+            Text(
+                text = "Blur softens the alpha field (cheap box approx).",
+                style = LuminaCaptionTextStyle,
+                color = LuminaMuted
+            )
+            ProSlider(
                 label = "Opacity",
                 value = mask.opacity * 100f,
                 onValueChange = { onOpacity(id, it / 100f) },
                 valueRange = 0f..100f,
                 displayValue = "${(mask.opacity * 100f).roundToInt()}%"
+            )
+            Text(
+                // Density is an alias of opacity: keep one control on purpose.
+                text = "Opacity doubles as Density (no duplicate control).",
+                style = LuminaCaptionTextStyle,
+                color = LuminaMuted
             )
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -302,6 +439,25 @@ fun MaskPanel(
                 onValueChange = { onTemperature(id, it) },
                 valueRange = -100f..100f,
                 displayValue = formatMaskTemp(mask.temperature)
+            )
+            ProSlider(
+                label = "Saturation (local)",
+                value = mask.saturation,
+                onValueChange = { onSaturation(id, it) },
+                valueRange = -100f..100f,
+                displayValue = formatMaskTemp(mask.saturation)
+            )
+            ProSlider(
+                label = "Clarity (local)",
+                value = mask.clarity,
+                onValueChange = { onClarity(id, it) },
+                valueRange = -100f..100f,
+                displayValue = formatMaskTemp(mask.clarity)
+            )
+            Text(
+                text = "Local saturation + clarity use the same approximations as the global stages.",
+                style = LuminaCaptionTextStyle,
+                color = LuminaMuted
             )
         }
         Row(

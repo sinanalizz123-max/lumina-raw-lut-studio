@@ -153,6 +153,9 @@ class EditorViewModel(application: Application, private val projectId: String?) 
     private val _showMaskOverlay = MutableStateFlow(false)
     val showMaskOverlay: StateFlow<Boolean> = _showMaskOverlay.asStateFlow()
 
+    private val _maskSampleArmedId = MutableStateFlow<String?>(null)
+    val maskSampleArmedId: StateFlow<String?> = _maskSampleArmedId.asStateFlow()
+
     private val _zoomTile = MutableStateFlow<ZoomTile?>(null)
     val zoomTile: StateFlow<ZoomTile?> = _zoomTile.asStateFlow()
 
@@ -1028,6 +1031,130 @@ class EditorViewModel(application: Application, private val projectId: String?) 
     fun setMaskExposure(id: String, exposure: Float) = updateMask(id) { it.withExposure(exposure) }
 
     fun setMaskTemperature(id: String, temperature: Float) = updateMask(id) { it.withTemperature(temperature) }
+
+    fun setMaskOp(id: String, op: com.lumina.studio.core.edit.MaskOp) =
+        updateMask(id) { it.withOp(op) }
+
+    fun setMaskSaturation(id: String, value: Float) = updateMask(id) { it.withSaturation(value) }
+
+    fun setMaskClarity(id: String, value: Float) = updateMask(id) { it.withClarity(value) }
+
+    fun setMaskBlur(id: String, value: Float) = updateMask(id) { it.withBlur(value) }
+
+    fun setMaskHueCenter(id: String, value: Float) = updateMask(id) { it.withHueCenter(value) }
+
+    fun setMaskHueRange(id: String, value: Float) = updateMask(id) { it.withHueRange(value) }
+
+    fun setMaskLumaLo(id: String, value: Float) = updateMask(id) { it.withLumaLo(value) }
+
+    fun setMaskLumaHi(id: String, value: Float) = updateMask(id) { it.withLumaHi(value) }
+
+    fun setMaskLumaFeather(id: String, value: Float) = updateMask(id) { it.withLumaFeather(value) }
+
+    fun armMaskSample(id: String?) {
+        if (id != null && _params.value.getMask(id) == null) return
+        _maskSampleArmedId.value = id
+    }
+
+    fun maskSamplePick(argb: Int) {
+        val id = _maskSampleArmedId.value ?: return
+        val hue = com.lumina.studio.core.edit.GradeHsl.argbToHueDeg(argb)
+        val current = _params.value
+        val next = current.updateMask(id) {
+            it.withHueCenter(hue).withSampledRgb(argb)
+        }
+        _maskSampleArmedId.value = null
+        if (next == current) return
+        pushUndo(current)
+        redoStack.clear()
+        _params.value = next
+        syncUndoRedo()
+        renderPreview()
+        schedulePersist()
+    }
+
+    fun setPerspectiveV(value: Float) {
+        val current = _params.value
+        val next = current.withPerspectiveV(value)
+        if (next == current) return
+        pushUndo(current)
+        redoStack.clear()
+        _params.value = next
+        syncUndoRedo()
+        renderPreview()
+        schedulePersist()
+    }
+
+    fun setPerspectiveH(value: Float) {
+        val current = _params.value
+        val next = current.withPerspectiveH(value)
+        if (next == current) return
+        pushUndo(current)
+        redoStack.clear()
+        _params.value = next
+        syncUndoRedo()
+        renderPreview()
+        schedulePersist()
+    }
+
+    fun setCustomAspect(w: Float, h: Float) {
+        val current = _params.value
+        val next = current.withCustomAspect(w, h)
+        if (next == current) return
+        pushUndo(current)
+        redoStack.clear()
+        _params.value = next
+        syncUndoRedo()
+        renderPreview()
+        schedulePersist()
+    }
+
+    fun setVignetteCorr(value: Float) {
+        val current = _params.value
+        val next = current.withVignetteCorr(value)
+        if (next == current) return
+        pushUndo(current)
+        redoStack.clear()
+        _params.value = next
+        syncUndoRedo()
+        renderPreview()
+        schedulePersist()
+    }
+
+    fun setCaShift(value: Float) {
+        val current = _params.value
+        val next = current.withCaShift(value)
+        if (next == current) return
+        pushUndo(current)
+        redoStack.clear()
+        _params.value = next
+        syncUndoRedo()
+        renderPreview()
+        schedulePersist()
+    }
+
+    fun setDistortion(value: Float) {
+        val current = _params.value
+        val next = current.withDistortion(value)
+        if (next == current) return
+        pushUndo(current)
+        redoStack.clear()
+        _params.value = next
+        syncUndoRedo()
+        renderPreview()
+        schedulePersist()
+    }
+
+    fun resetOptics() {
+        val current = _params.value
+        if (current.isOpticsDefault()) return
+        pushUndo(current)
+        redoStack.clear()
+        _params.value = current.resetOptics()
+        syncUndoRedo()
+        renderPreview()
+        schedulePersist()
+    }
 
     fun resetMasks() {
         val current = _params.value

@@ -510,7 +510,14 @@ fun CropToolPanel(
     onFlipH: () -> Unit,
     onFlipV: () -> Unit,
     onReset: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onPerspectiveV: (Float) -> Unit = {},
+    onPerspectiveH: (Float) -> Unit = {},
+    onCustomAspect: (Float, Float) -> Unit = { _, _ -> },
+    onVignette: (Float) -> Unit = {},
+    onCa: (Float) -> Unit = {},
+    onDistortion: (Float) -> Unit = {},
+    onResetOptics: () -> Unit = {}
 ) {
     CropPanel(
         params = params,
@@ -520,7 +527,14 @@ fun CropToolPanel(
         onFlipH = onFlipH,
         onFlipV = onFlipV,
         onReset = onReset,
-        modifier = modifier
+        modifier = modifier,
+        onPerspectiveV = onPerspectiveV,
+        onPerspectiveH = onPerspectiveH,
+        onCustomAspect = onCustomAspect,
+        onVignette = onVignette,
+        onCa = onCa,
+        onDistortion = onDistortion,
+        onResetOptics = onResetOptics
     )
 }
 
@@ -545,7 +559,18 @@ fun MaskToolPanel(
     onTemperature: (String, Float) -> Unit,
     onToggleOverlay: (Boolean) -> Unit,
     onResetAll: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onOp: (String, com.lumina.studio.core.edit.MaskOp) -> Unit = { _, _ -> },
+    onSaturation: (String, Float) -> Unit = { _, _ -> },
+    onClarity: (String, Float) -> Unit = { _, _ -> },
+    onBlur: (String, Float) -> Unit = { _, _ -> },
+    onHueCenter: (String, Float) -> Unit = { _, _ -> },
+    onHueRange: (String, Float) -> Unit = { _, _ -> },
+    onLumaLo: (String, Float) -> Unit = { _, _ -> },
+    onLumaHi: (String, Float) -> Unit = { _, _ -> },
+    onLumaFeather: (String, Float) -> Unit = { _, _ -> },
+    maskSampleArmedId: String? = null,
+    onArmSample: (String?) -> Unit = {}
 ) {
     MaskPanel(
         params = params,
@@ -567,6 +592,17 @@ fun MaskToolPanel(
         onTemperature = onTemperature,
         onToggleOverlay = onToggleOverlay,
         onResetAll = onResetAll,
-        modifier = modifier
+        modifier = modifier,
+        onOp = onOp,
+        onSaturation = onSaturation,
+        onClarity = onClarity,
+        onBlur = onBlur,
+        onHueCenter = onHueCenter,
+        onHueRange = onHueRange,
+        onLumaLo = onLumaLo,
+        onLumaHi = onLumaHi,
+        onLumaFeather = onLumaFeather,
+        maskSampleArmedId = maskSampleArmedId,
+        onArmSample = onArmSample
     )
 }

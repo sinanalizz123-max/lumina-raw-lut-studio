@@ -12,10 +12,15 @@ import com.lumina.studio.core.edit.CurveChannel
 import com.lumina.studio.core.edit.Curves
 import com.lumina.studio.core.edit.EditMask
 import com.lumina.studio.core.edit.EditParams
+import com.lumina.studio.core.edit.GeometryMath
 import com.lumina.studio.core.edit.GradeHsl
 import com.lumina.studio.core.edit.GradeMath
 import com.lumina.studio.core.edit.HslColor
+import com.lumina.studio.core.edit.MaskOp
+import com.lumina.studio.core.edit.MaskRangeMath
 import com.lumina.studio.core.edit.MaskTool
+import com.lumina.studio.core.edit.OpticsMath
+import com.lumina.studio.core.edit.OpticsParams
 import com.lumina.studio.core.edit.PointColorMath
 import com.lumina.studio.core.edit.StepKey
 import com.lumina.studio.core.lut.LutCube
@@ -102,7 +107,7 @@ object PreviewRenderer {
         params.isDefault() && !hasLut
 
     // Render order: LUT -> adjusts -> HSL -> curves -> pointColor -> grading ->
-    // details -> masks -> crop.
+    // optics -> details -> masks -> geometry(crop/transform).
     // Export uses this same function via Exporter.renderForExport so preview matches export.
     // Perf budget: <100ms on <=1600px previews via early-outs per stage; per-pixel
     // HSL/curves passes run only when their groups are non-default. Tradeoff: HSL
@@ -157,6 +162,13 @@ object PreviewRenderer {
     // PREVIEW (default) keeps M4 ARGB_8888 behavior so all existing callers
     // compile and render byte-identically; FINAL uses RGBA_F16 intermediates
     // for the LUT/curve/HSL/matrix chain (export + fullscreen/zoom-tile final).
+    // M7 (§22-24, §85 order): optics runs AFTER grading (operates on graded
+    // pixels) and BEFORE details; masks run BEFORE geometry; geometry
+    // (perspective-warp -> crop cut, honoring StepKey.CROP) runs LAST.
+    // Coordinate order: masks key off pre-geometry (post-details) pixels in
+    // the pre-warp frame; the perspective warp then resamples the graded
+    // frame and the crop cut applies in the post-warp frame (same frame the
+    // CropOverlay maps to screen pixels).
     fun render(
         src: Bitmap,
         params: EditParams,
@@ -218,6 +230,13 @@ object PreviewRenderer {
         }
         if (!params.isGradeDefault() && steps.get(StepKey.COLOR)) {
             val out = applyGrading(current, params, quality)
+            if (out !== current) {
+                if (current !== src) current.recycle()
+                current = out
+            }
+        }
+        if (!params.optics.isDefault() && steps.get(StepKey.CROP)) {
+            val out = applyOptics(current, params.optics, quality)
             if (out !== current) {
                 if (current !== src) current.recycle()
                 current = out
@@ -624,13 +643,27 @@ object PreviewRenderer {
                     replace(flipped)
                 }
             }
-            val aspect = crop.ratio.aspect
-            // Crop order: rotate -> straighten -> flip -> custom-rect-crop for
-            // FREE (fractions are relative to the post-flip frame, the same
-            // frame CropOverlay maps to screen pixels, so the overlay box
-            // matches this cut) else centered aspect-crop. Export reuses this
-            // exact path via Exporter.renderForExport -> render(), so preview
-            // and export stay identical.
+            // M7 geometry order: rotate -> straighten -> flip ->
+            // perspective-warp -> crop cut. The warp resamples the graded
+            // frame (Matrix.setPolyToPoly 4-point mapping, bilinear filter;
+            // transparent gutters possible at extremes); the cut below runs
+            // in the post-warp frame, matching CropOverlay.
+            if (crop.perspectiveV != 0f || crop.perspectiveH != 0f) {
+                val warped = perspectiveWarp(
+                    current, crop.perspectiveV, crop.perspectiveH
+                )
+                if (warped !== current) replace(warped)
+            }
+            // M7: Custom ratio uses crop.effectiveAspect() (customW/customH);
+            // invalid custom aspect falls back to no cut (free behavior).
+            val aspect = crop.effectiveAspect()
+            // Crop order: rotate -> straighten -> flip -> perspective ->
+            // custom-rect-crop for FREE (fractions are relative to the
+            // post-warp frame, the same frame CropOverlay maps to screen
+            // pixels, so the overlay box matches this cut) else centered
+            // aspect-crop. Export reuses this exact path via
+            // Exporter.renderForExport -> render(), so preview and export
+            // stay identical.
             if (crop.ratio == com.lumina.studio.core.edit.CropRatio.FREE) {
                 if (!crop.isFullFrameRect()) {
                     val bw = current.width
@@ -669,6 +702,155 @@ object PreviewRenderer {
         }
     }
 
+    /**
+     * M7 perspective warp (§23, documented approximation): 4-point projective
+     * mapping via android.graphics.Matrix.setPolyToPoly on preview-size
+     * bitmaps, bilinear filter. Early-out (returns [src]) at 0/0.
+     * Destination corners come from [GeometryMath.perspectiveDst].
+     */
+    fun perspectiveWarp(src: Bitmap, vAmt: Float, hAmt: Float): Bitmap {
+        if (vAmt == 0f && hAmt == 0f) return src
+        val w = src.width
+        val h = src.height
+        if (w <= 0 || h <= 0) return src
+        return try {
+            val v = vAmt.coerceIn(-100f, 100f)
+            val hz = hAmt.coerceIn(-100f, 100f)
+            if (v == 0f && hz == 0f) return src
+            val wf = w.toFloat()
+            val hf = h.toFloat()
+            val srcPts = floatArrayOf(0f, 0f, wf, 0f, wf, hf, 0f, hf)
+            val dstPts = GeometryMath.perspectiveDst(w, h, v, hz)
+            val matrix = Matrix()
+            if (!matrix.setPolyToPoly(srcPts, 0, dstPts, 0, 4)) return src
+            Bitmap.createBitmap(src, 0, 0, w, h, matrix, true)
+        } catch (_: Exception) {
+            src
+        }
+    }
+
+    /**
+     * M7 manual optics (§22, manual-only approximations on preview-size
+     * bitmaps, early-out when default). Order: distortion (inverse radial
+     * remap, nearest-neighbor) -> CA (radial red/blue shift,
+     * nearest-neighbor) -> vignette gain. Honors StepKey.CROP (transform
+     * group); called from render() between grading and details.
+     */
+    fun applyOptics(
+        src: Bitmap,
+        optics: OpticsParams,
+        quality: RenderQuality = RenderQuality.PREVIEW
+    ): Bitmap {
+        if (optics.isDefault()) return src
+        val w = src.width
+        val h = src.height
+        if (w <= 0 || h <= 0) return src
+        return try {
+            val total = w * h
+            val pixels = IntArray(total)
+            src.getPixels(pixels, 0, w, 0, 0, w, h)
+            val needsRemap = optics.distortion != 0f || optics.caShift != 0f
+            var working = pixels
+            if (needsRemap) {
+                working = applyOpticsRemap(pixels, w, h, optics)
+            }
+            if (optics.vignetteCorr != 0f) {
+                applyOpticsVignetteInPlace(working, w, h, optics.vignetteCorr)
+            }
+            if (working === pixels && optics.vignetteCorr == 0f) return src
+            val out = createWorkingBitmap(w, h, quality)
+            out.setPixels(working, 0, w, 0, 0, w, h)
+            out
+        } catch (_: Exception) {
+            src
+        }
+    }
+
+    private fun applyOpticsVignetteInPlace(
+        pixels: IntArray, w: Int, h: Int, amount: Float
+    ) {
+        val cx = w / 2f
+        val cy = h / 2f
+        val halfDiag = sqrt(cx * cx + cy * cy).coerceAtLeast(1f)
+        var idx = 0
+        for (y in 0 until h) {
+            val dy = y - cy
+            for (x in 0 until w) {
+                val dx = x - cx
+                val dist = sqrt(dx * dx + dy * dy) / halfDiag
+                val gain = OpticsMath.vignetteGain(dist, amount)
+                if (gain != 1f) {
+                    val p = pixels[idx]
+                    val a = p ushr 24
+                    val r = (((p shr 16) and 0xFF) * gain + 0.5f).toInt().coerceIn(0, 255)
+                    val g = (((p shr 8) and 0xFF) * gain + 0.5f).toInt().coerceIn(0, 255)
+                    val b = ((p and 0xFF) * gain + 0.5f).toInt().coerceIn(0, 255)
+                    pixels[idx] = (a shl 24) or (r shl 16) or (g shl 8) or b
+                }
+                idx++
+            }
+        }
+    }
+
+    private fun applyOpticsRemap(
+        srcPixels: IntArray, w: Int, h: Int, optics: OpticsParams
+    ): IntArray {
+        val total = w * h
+        val out = IntArray(total)
+        val cx = w / 2f
+        val cy = h / 2f
+        val halfDiag = sqrt(cx * cx + cy * cy).coerceAtLeast(1f)
+        val minDim = minOf(w, h).coerceAtLeast(1)
+        val k1 = OpticsMath.distortionK1(optics.distortion)
+        val hasDist = optics.distortion != 0f && k1 != 0f
+        val hasCa = optics.caShift != 0f
+        for (y in 0 until h) {
+            for (x in 0 until w) {
+                val dx = x - cx
+                val dy = y - cy
+                val distPx = sqrt(dx * dx + dy * dy)
+                val distNorm = (distPx / halfDiag).coerceIn(0f, 1f)
+                var sx = x.toFloat()
+                var sy = y.toFloat()
+                if (hasDist && distNorm > 1e-6f) {
+                    val rSrc = OpticsMath.inverseRemapRadius(distNorm, k1)
+                    val s = if (distNorm > 1e-6f) rSrc / distNorm else 1f
+                    sx = cx + dx * s
+                    sy = cy + dy * s
+                }
+                if (!hasCa) {
+                    out[y * w + x] = sampleNearest(srcPixels, w, h, sx, sy)
+                } else {
+                    val shift = OpticsMath.caShiftPx(distNorm, optics.caShift, minDim)
+                    if (shift == 0f || distPx < 1e-6f) {
+                        out[y * w + x] = sampleNearest(srcPixels, w, h, sx, sy)
+                    } else {
+                        val ux = dx / distPx
+                        val uy = dy / distPx
+                        // Convention: positive shift = red outward, blue
+                        // inward. Red samples inward (pos - dir*shift/2),
+                        // blue outward (pos + dir*shift/2), green center.
+                        val rPx = sampleNearest(srcPixels, w, h, sx - ux * shift / 2f, sy - uy * shift / 2f)
+                        val gPx = sampleNearest(srcPixels, w, h, sx, sy)
+                        val bPx = sampleNearest(srcPixels, w, h, sx + ux * shift / 2f, sy + uy * shift / 2f)
+                        val a = gPx ushr 24
+                        out[y * w + x] = (a shl 24) or
+                            ((rPx shr 16) and 0xFF shl 16) or
+                            ((gPx shr 8) and 0xFF shl 8) or
+                            (bPx and 0xFF)
+                    }
+                }
+            }
+        }
+        return out
+    }
+
+    private fun sampleNearest(pixels: IntArray, w: Int, h: Int, fx: Float, fy: Float): Int {
+        val x = (fx + 0.5f).toInt().coerceIn(0, w - 1)
+        val y = (fy + 0.5f).toInt().coerceIn(0, h - 1)
+        return pixels[y * w + x]
+    }
+
     fun applyMasks(
         src: Bitmap,
         params: EditParams,
@@ -681,8 +863,12 @@ object PreviewRenderer {
         if (w <= 0 || h <= 0) return src
         val visible = masks.filter { it.visible && it.opacity > 0.001f }
         if (visible.isEmpty()) return src
+        // M7: SUBTRACT erases prior grades (active even with a default grade);
+        // eraser always active; otherwise the mask needs a local grade.
         val active = visible.filter {
-            if (it.tool == MaskTool.ERASER) true else (it.exposure != 0f || it.temperature != 0f)
+            if (it.tool == MaskTool.ERASER) true
+            else if (it.op == MaskOp.SUBTRACT) true
+            else it.hasLocalGrade()
         }
         if (active.isEmpty()) return src
         return try {
@@ -690,8 +876,30 @@ object PreviewRenderer {
             val pixels = IntArray(total)
             src.getPixels(pixels, 0, w, 0, 0, w, h)
             val baseCopy = pixels.clone()
+            // Range weights read the pre-mask (post-details) frame so stacked
+            // local grades never shift another mask's selection.
+            val needHues = active.any { it.tool == MaskTool.COLOR }
+            val needLumas = active.any { it.tool == MaskTool.LUMINANCE }
+            val baseHues = if (needHues) FloatArray(total) else null
+            val baseLumas = if (needLumas) FloatArray(total) else null
+            if (baseHues != null || baseLumas != null) {
+                for (i in 0 until total) {
+                    val p = baseCopy[i]
+                    val r = ((p shr 16) and 0xFF) / 255f
+                    val g = ((p shr 8) and 0xFF) / 255f
+                    val b = (p and 0xFF) / 255f
+                    if (baseHues != null) baseHues[i] = rgbToHsl(r, g, b)[0]
+                    if (baseLumas != null) {
+                        baseLumas[i] = (0.2126f * r + 0.7152f * g + 0.0722f * b).coerceIn(0f, 1f)
+                    }
+                }
+            }
+            // Accumulated selection alpha (list order); ops compose against it.
+            val acc = FloatArray(total)
             for (mask in active) {
-                applySingleMask(pixels, baseCopy, w, h, mask)
+                var raw = computeRawAlpha(mask, w, h, baseHues, baseLumas)
+                if (mask.blur > 0.001f) raw = blurAlphaDownUp(raw, w, h, mask.blur)
+                applyMaskWithOp(pixels, baseCopy, acc, raw, w, h, mask)
             }
             val out = createWorkingBitmap(w, h, quality)
             out.setPixels(pixels, 0, w, 0, 0, w, h)
@@ -701,37 +909,167 @@ object PreviewRenderer {
         }
     }
 
-    private fun applySingleMask(pixels: IntArray, baseCopy: IntArray, w: Int, h: Int, mask: EditMask) {
+    private fun computeRawAlpha(
+        mask: EditMask, w: Int, h: Int, baseHues: FloatArray?, baseLumas: FloatArray?
+    ): FloatArray {
+        val total = w * h
+        val out = FloatArray(total)
         val opacity = mask.opacity.coerceIn(0f, 1f)
-        if (opacity <= 0.001f) return
+        if (opacity <= 0.001f) return out
+        val inverted = mask.inverted
+        when (mask.tool) {
+            MaskTool.COLOR -> {
+                val hues = baseHues ?: return out
+                for (i in 0 until total) {
+                    val weight = MaskRangeMath.colorWeight(hues[i], mask.hueCenter, mask.hueRange)
+                    out[i] = (if (inverted) 1f - weight else weight) * opacity
+                }
+            }
+            MaskTool.LUMINANCE -> {
+                val lumas = baseLumas ?: return out
+                for (i in 0 until total) {
+                    val weight = MaskRangeMath.lumaWeight(lumas[i], mask.lumaLo, mask.lumaHi, mask.lumaFeather)
+                    out[i] = (if (inverted) 1f - weight else weight) * opacity
+                }
+            }
+            MaskTool.RADIAL -> fillRadialAlpha(out, w, h, mask, opacity, inverted)
+            MaskTool.LINEAR -> fillLinearAlpha(out, w, h, mask, opacity, inverted)
+            MaskTool.BRUSH, MaskTool.ERASER -> fillStrokeAlpha(out, w, h, mask, opacity, inverted)
+        }
+        return out
+    }
+
+    /**
+     * M7 mask blur: cheap box approx on the alpha field via
+     * downsample-then-upsample (block-average down, nearest-neighbor up).
+     * Radius maps blur 0..50 to a downsample factor 1..8.
+     */
+    internal fun blurAlphaDownUp(alpha: FloatArray, w: Int, h: Int, blur: Float): FloatArray {
+        if (blur <= 0.001f) return alpha
+        val total = w * h
+        if (total <= 0) return alpha
+        val factor = (1f + (blur.coerceIn(0f, EditMask.MAX_BLUR) / EditMask.MAX_BLUR) * 7f)
+            .coerceIn(1f, 8f)
+        if (factor <= 1.001f) return alpha
+        val sw = (w / factor + 0.5f).toInt().coerceIn(1, w)
+        val sh = (h / factor + 0.5f).toInt().coerceIn(1, h)
+        if (sw >= w && sh >= h) return alpha
+        return try {
+            val small = FloatArray(sw * sh)
+            for (sy in 0 until sh) {
+                val y0 = ((sy * h) / sh).coerceIn(0, h - 1)
+                val y1 = (((sy + 1) * h) / sh).coerceIn(y0 + 1, h)
+                for (sx in 0 until sw) {
+                    val x0 = ((sx * w) / sw).coerceIn(0, w - 1)
+                    val x1 = (((sx + 1) * w) / sw).coerceIn(x0 + 1, w)
+                    var sum = 0f
+                    var n = 0
+                    for (y in y0 until y1) {
+                        var idx = y * w + x0
+                        for (x in x0 until x1) {
+                            sum += alpha[idx]
+                            n++
+                            idx++
+                        }
+                    }
+                    small[sy * sw + sx] = if (n > 0) sum / n else 0f
+                }
+            }
+            val out = FloatArray(total)
+            for (y in 0 until h) {
+                val sy = ((y * sh) / h).coerceIn(0, sh - 1)
+                for (x in 0 until w) {
+                    val sx = ((x * sw) / w).coerceIn(0, sw - 1)
+                    out[y * w + x] = small[sy * sw + sx]
+                }
+            }
+            out
+        } catch (_: Exception) {
+            alpha
+        }
+    }
+
+    private fun applyMaskWithOp(
+        pixels: IntArray, baseCopy: IntArray, acc: FloatArray,
+        raw: FloatArray, w: Int, h: Int, mask: EditMask
+    ) {
+        val total = w * h
+        if (raw.size != total || acc.size != total) return
         val isEraser = mask.tool == MaskTool.ERASER
         val expScale = if (isEraser) 1f else 2f.pow(mask.exposure).coerceIn(0.1f, 8f)
         val rGain = if (isEraser) 1f else (1f + mask.temperature / 150f).coerceIn(0.4f, 2f)
         val bGain = if (isEraser) 1f else (1f - mask.temperature / 150f).coerceIn(0.4f, 2f)
-        when (mask.tool) {
-            MaskTool.RADIAL -> applyRadial(pixels, baseCopy, w, h, mask, opacity, expScale, rGain, bGain, isEraser)
-            MaskTool.LINEAR -> applyLinear(pixels, baseCopy, w, h, mask, opacity, expScale, rGain, bGain, isEraser)
-            MaskTool.BRUSH, MaskTool.ERASER -> applyStroke(pixels, baseCopy, w, h, mask, opacity, expScale, rGain, bGain, isEraser)
+        val sat = if (isEraser) 0f else mask.saturation.coerceIn(-100f, 100f)
+        val micro = if (isEraser) 0f else mask.clarity.coerceIn(-100f, 100f)
+        val op = mask.op
+        val isErase = isEraser || op == MaskOp.SUBTRACT
+        for (i in 0 until total) {
+            val a = raw[i].coerceIn(0f, 1f)
+            val prev = acc[i].coerceIn(0f, 1f)
+            val e = MaskRangeMath.effectiveAlpha(prev, a, op)
+            acc[i] = MaskRangeMath.combineAcc(prev, a, op)
+            if (e <= 0.001f) continue
+            pixels[i] = if (isErase) {
+                blendTowardBase(pixels[i], baseCopy[i], e)
+            } else {
+                blendPixelExtended(pixels[i], expScale, rGain, bGain, sat, micro, e)
+            }
         }
     }
 
-    private fun blendPixel(current: Int, base: Int, expScale: Float, rGain: Float, bGain: Float, a: Float, isEraser: Boolean): Int {
+    private fun blendTowardBase(current: Int, base: Int, a: Float): Int {
+        if (a <= 0.001f) return current
+        val alpha = a.coerceIn(0f, 1f)
+        if (alpha >= 0.999f) return (current and -0x1000000) or (base and 0x00FFFFFF)
+        val r0 = ((current shr 16) and 0xFF)
+        val g0 = ((current shr 8) and 0xFF)
+        val b0 = (current and 0xFF)
+        val r1 = ((base shr 16) and 0xFF)
+        val g1 = ((base shr 8) and 0xFF)
+        val b1 = (base and 0xFF)
+        val r = (r0 + (r1 - r0) * alpha + 0.5f).toInt().coerceIn(0, 255)
+        val g = (g0 + (g1 - g0) * alpha + 0.5f).toInt().coerceIn(0, 255)
+        val b = (b0 + (b1 - b0) * alpha + 0.5f).toInt().coerceIn(0, 255)
+        val al = current ushr 24
+        return (al shl 24) or (r shl 16) or (g shl 8) or b
+    }
+
+    /**
+     * M7 local grade blend: exposure + temperature gains (same gamma-domain
+     * sRGB approximations as the global buildMatrix stage), then saturation
+     * (luma-anchored interpolation, same scale as the global sat stage) and
+     * clarity-micro (gentle pivot contrast, same family as the details
+     * micro-contrast approx). Gamma-domain by design — matches overlay UX;
+     * linear blend would change every existing mask (see M5 audit).
+     */
+    private fun blendPixelExtended(
+        current: Int, expScale: Float, rGain: Float, bGain: Float,
+        satAdjust: Float, clarityAdjust: Float, a: Float
+    ): Int {
         if (a <= 0.001f) return current
         val alpha = a.coerceIn(0f, 1f)
         val r0 = ((current shr 16) and 0xFF) / 255f
         val g0 = ((current shr 8) and 0xFF) / 255f
         val b0 = (current and 0xFF) / 255f
-        val tr: Float
-        val tg: Float
-        val tb: Float
-        if (isEraser) {
-            tr = ((base shr 16) and 0xFF) / 255f
-            tg = ((base shr 8) and 0xFF) / 255f
-            tb = (base and 0xFF) / 255f
-        } else {
-            tr = (r0 * expScale * rGain).coerceIn(0f, 1f)
-            tg = (g0 * expScale).coerceIn(0f, 1f)
-            tb = (b0 * expScale * bGain).coerceIn(0f, 1f)
+        var tr = (r0 * expScale * rGain).coerceIn(0f, 1f)
+        var tg = (g0 * expScale).coerceIn(0f, 1f)
+        var tb = (b0 * expScale * bGain).coerceIn(0f, 1f)
+        if (satAdjust != 0f) {
+            val satF = (1f + satAdjust / 100f).coerceIn(0f, 3f)
+            if (satF != 1f) {
+                val luma = 0.2126f * tr + 0.7152f * tg + 0.0722f * tb
+                tr = (luma + (tr - luma) * satF).coerceIn(0f, 1f)
+                tg = (luma + (tg - luma) * satF).coerceIn(0f, 1f)
+                tb = (luma + (tb - luma) * satF).coerceIn(0f, 1f)
+            }
+        }
+        if (clarityAdjust != 0f) {
+            val k = (1f + clarityAdjust / 100f * 0.3f).coerceIn(0f, 2f)
+            if (k != 1f) {
+                tr = (0.5f + (tr - 0.5f) * k).coerceIn(0f, 1f)
+                tg = (0.5f + (tg - 0.5f) * k).coerceIn(0f, 1f)
+                tb = (0.5f + (tb - 0.5f) * k).coerceIn(0f, 1f)
+            }
         }
         val r = (r0 + (tr - r0) * alpha)
         val g = (g0 + (tg - g0) * alpha)
@@ -749,15 +1087,13 @@ object PreviewRenderer {
         return t * t * (3f - 2f * t)
     }
 
-    private fun applyRadial(
-        pixels: IntArray, baseCopy: IntArray, w: Int, h: Int, mask: EditMask,
-        opacity: Float, expScale: Float, rGain: Float, bGain: Float, isEraser: Boolean
+    private fun fillRadialAlpha(
+        out: FloatArray, w: Int, h: Int, mask: EditMask, opacity: Float, inverted: Boolean
     ) {
         val cx = mask.centerX.coerceIn(0f, 1f) * w
         val cy = mask.centerY.coerceIn(0f, 1f) * h
         val radiusPx = (mask.radius.coerceIn(0.01f, 1f) * minOf(w, h).toFloat()).coerceAtLeast(1f)
         val feather = mask.feather.coerceIn(0f, 1f)
-        val inverted = mask.inverted
         val inner = if (feather <= 0.001f) radiusPx else radiusPx * (1f - feather)
         for (y in 0 until h) {
             val dy = y - cy
@@ -772,18 +1108,14 @@ object PreviewRenderer {
                     else if (dist >= radiusPx) 0f
                     else 1f - smoothstep(inner, radiusPx, dist)
                 }
-                val a = (if (inverted) 1f - raw else raw) * opacity
-                if (a > 0.001f) {
-                    pixels[idx] = blendPixel(pixels[idx], baseCopy[idx], expScale, rGain, bGain, a, isEraser)
-                }
+                out[idx] = (if (inverted) 1f - raw else raw) * opacity
                 idx++
             }
         }
     }
 
-    private fun applyLinear(
-        pixels: IntArray, baseCopy: IntArray, w: Int, h: Int, mask: EditMask,
-        opacity: Float, expScale: Float, rGain: Float, bGain: Float, isEraser: Boolean
+    private fun fillLinearAlpha(
+        out: FloatArray, w: Int, h: Int, mask: EditMask, opacity: Float, inverted: Boolean
     ) {
         val rad = mask.angleDeg * Math.PI.toFloat() / 180f
         val cosA = cos(rad)
@@ -791,7 +1123,6 @@ object PreviewRenderer {
         val position = mask.position.coerceIn(0f, 1f)
         val feather = mask.feather.coerceIn(0f, 1f)
         val fw = 0.02f + feather * 0.3f
-        val inverted = mask.inverted
         val wf = w.toFloat()
         val hf = h.toFloat()
         for (y in 0 until h) {
@@ -801,25 +1132,20 @@ object PreviewRenderer {
                 val nx = if (wf > 0f) x / wf else 0.5f
                 val p = (nx - 0.5f) * cosA + (ny - 0.5f) * sinA + 0.5f
                 val raw = 1f - smoothstep(position - fw / 2f, position + fw / 2f, p)
-                val a = (if (inverted) 1f - raw else raw) * opacity
-                if (a > 0.001f) {
-                    pixels[idx] = blendPixel(pixels[idx], baseCopy[idx], expScale, rGain, bGain, a, isEraser)
-                }
+                out[idx] = (if (inverted) 1f - raw else raw) * opacity
                 idx++
             }
         }
     }
 
-    private fun applyStroke(
-        pixels: IntArray, baseCopy: IntArray, w: Int, h: Int, mask: EditMask,
-        opacity: Float, expScale: Float, rGain: Float, bGain: Float, isEraser: Boolean
+    private fun fillStrokeAlpha(
+        out: FloatArray, w: Int, h: Int, mask: EditMask, opacity: Float, inverted: Boolean
     ) {
         val pts = mask.points
         if (pts.isEmpty()) return
         val minDim = minOf(w, h).toFloat().coerceAtLeast(1f)
         val radiusPx = ((mask.sizePx.coerceIn(EditMask.MIN_SIZE_PX, EditMask.MAX_SIZE_PX) * 0.5f) * (minDim / 1000f)).coerceAtLeast(1f)
         val feather = mask.feather.coerceIn(0f, 1f)
-        val inverted = mask.inverted
         val inner = if (feather <= 0.001f) radiusPx else radiusPx * (1f - feather)
         val xs = FloatArray(pts.size) { pts[it].x.coerceIn(0f, 1f) * w }
         val ys = FloatArray(pts.size) { pts[it].y.coerceIn(0f, 1f) * h }
@@ -849,10 +1175,7 @@ object PreviewRenderer {
                         else if (dist >= radiusPx) 0f
                         else 1f - smoothstep(inner, radiusPx, dist)
                     }
-                    val a = raw * opacity
-                    if (a > 0.001f) {
-                        pixels[idx] = blendPixel(pixels[idx], baseCopy[idx], expScale, rGain, bGain, a, isEraser)
-                    }
+                    out[idx] = raw * opacity
                     idx++
                 }
             }
@@ -875,9 +1198,7 @@ object PreviewRenderer {
                     } else {
                         a = opacity
                     }
-                    if (a > 0.001f) {
-                        pixels[idx] = blendPixel(pixels[idx], baseCopy[idx], expScale, rGain, bGain, a, isEraser)
-                    }
+                    out[idx] = a
                     idx++
                 }
             }

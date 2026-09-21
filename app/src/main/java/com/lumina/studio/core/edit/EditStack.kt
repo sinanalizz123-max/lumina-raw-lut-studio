@@ -352,10 +352,13 @@ enum class CropRatio(val key: String, val label: String, val aspect: Float?) {
     FREE("free", "Free", null),
     ORIGINAL("original", "Original", null),
     R1_1("1_1", "1:1", 1f),
+    R4_3("4_3", "4:3", 4f / 3f),
     R4_5("4_5", "4:5", 4f / 5f),
+    R5_4("5_4", "5:4", 5f / 4f),
     R3_2("3_2", "3:2", 3f / 2f),
     R16_9("16_9", "16:9", 16f / 9f),
-    R9_16("9_16", "9:16", 9f / 16f);
+    R9_16("9_16", "9:16", 9f / 16f),
+    CUSTOM("custom", "Custom", null);
 
     companion object {
         fun fromKey(key: String?): CropRatio =
@@ -429,14 +432,32 @@ data class CropParams(
     val customLeft: Float = 0f,
     val customTop: Float = 0f,
     val customRight: Float = 1f,
-    val customBottom: Float = 1f
+    val customBottom: Float = 1f,
+    // M7 geometry (§23): manual perspective (projective warp, early-out at 0)
+    // + custom-ratio w:h floats for CropRatio.CUSTOM.
+    val perspectiveV: Float = 0f,
+    val perspectiveH: Float = 0f,
+    val customW: Float = 4f,
+    val customH: Float = 3f
 ) {
     fun isFullFrameRect(): Boolean =
         CropRects.isFullFrame(customLeft, customTop, customRight, customBottom)
 
     fun isDefault(): Boolean =
         ratio == CropRatio.FREE && rotationSteps == 0 &&
-            straightenDeg == 0f && !flipH && !flipV && isFullFrameRect()
+            straightenDeg == 0f && !flipH && !flipV && isFullFrameRect() &&
+            perspectiveV == 0f && perspectiveH == 0f
+
+    /** Effective aspect for the centered aspect-cut, or null for free-form. */
+    fun effectiveAspect(): Float? {
+        if (ratio == CropRatio.CUSTOM) {
+            if (customW <= 0f || customH <= 0f) return null
+            val a = customW / customH
+            if (!a.isFinite() || a <= 0f) return null
+            return a
+        }
+        return ratio.aspect
+    }
 
     fun withRatio(ratio: CropRatio): CropParams =
         if (this.ratio == ratio) this else copy(ratio = ratio)
@@ -469,17 +490,53 @@ data class CropParams(
             copy(customLeft = s[0], customTop = s[1], customRight = s[2], customBottom = s[3])
         }
     }
+
+    fun withPerspectiveV(v: Float): CropParams {
+        val c = v.coerceIn(-100f, 100f)
+        return if (perspectiveV == c) this else copy(perspectiveV = c)
+    }
+
+    fun withPerspectiveH(v: Float): CropParams {
+        val c = v.coerceIn(-100f, 100f)
+        return if (perspectiveH == c) this else copy(perspectiveH = c)
+    }
+
+    fun withCustomAspect(w: Float, h: Float): CropParams {
+        val cw = w.coerceIn(0.1f, 99f)
+        val ch = h.coerceIn(0.1f, 99f)
+        return if (customW == cw && customH == ch) this else copy(customW = cw, customH = ch)
+    }
 }
 
 enum class MaskTool(val label: String) {
     BRUSH("Brush"),
     ERASER("Eraser"),
     LINEAR("Linear"),
-    RADIAL("Radial");
+    RADIAL("Radial"),
+    COLOR("Color range"),
+    LUMINANCE("Luma range");
 
     companion object {
         fun fromKey(key: String?): MaskTool =
             entries.firstOrNull { it.name == key } ?: BRUSH
+    }
+}
+
+/**
+ * M7 mask combine op (§24). Order = list order, applied against the
+ * ACCUMULATED alpha of previous masks (see MaskRangeMath):
+ * ADD unions, SUBTRACT cuts out (erases prior grades, ignores its own
+ * grade), INTERSECT keeps the overlap (own grade on overlap only).
+ * Per-mask [EditMask.inverted] applies before the op.
+ */
+enum class MaskOp(val label: String) {
+    ADD("Add"),
+    SUBTRACT("Subtract"),
+    INTERSECT("Intersect");
+
+    companion object {
+        fun fromKey(key: String?): MaskOp =
+            entries.firstOrNull { it.name == key } ?: ADD
     }
 }
 
@@ -500,12 +557,30 @@ data class EditMask(
     val position: Float = 0.5f,
     val points: List<MaskPoint> = emptyList(),
     val exposure: Float = 0f,
-    val temperature: Float = 0f
+    val temperature: Float = 0f,
+    // M7 (§24): combine op + extended local grades + range specs + blur.
+    // Opacity doubles as Density (no duplicate control — see MaskPanel note).
+    val op: MaskOp = MaskOp.ADD,
+    val saturation: Float = 0f,
+    val clarity: Float = 0f,
+    // Mask blur radius 0..MAX_BLUR: cheap box approx on the alpha field
+    // (downsample-then-upsample); 0 = off.
+    val blur: Float = 0f,
+    // Color-range selection (MaskTool.COLOR): hue falloff reused from
+    // PointColorMath; sampledRgb is the eyedropper seed (UI only).
+    val hueCenter: Float = 0f,
+    val hueRange: Float = 60f,
+    val sampledRgb: Int? = null,
+    // Luminance-range selection (MaskTool.LUMINANCE): smooth band.
+    val lumaLo: Float = 0f,
+    val lumaHi: Float = 1f,
+    val lumaFeather: Float = 0.2f
 ) {
     companion object {
         const val MIN_SIZE_PX = 1f
         const val MAX_SIZE_PX = 500f
         const val MAX_POINTS = 64
+        const val MAX_BLUR = 50f
 
         fun sanitizePoints(points: List<MaskPoint>?): List<MaskPoint> {
             if (points.isNullOrEmpty()) return emptyList()
@@ -569,6 +644,90 @@ data class EditMask(
     fun withTemperature(v: Float): EditMask {
         val c = v.coerceIn(-100f, 100f)
         return if (temperature == c) this else copy(temperature = v.coerceIn(-100f, 100f))
+    }
+
+    fun withOp(v: MaskOp): EditMask =
+        if (op == v) this else copy(op = v)
+
+    fun withSaturation(v: Float): EditMask {
+        val c = v.coerceIn(-100f, 100f)
+        return if (saturation == c) this else copy(saturation = c)
+    }
+
+    fun withClarity(v: Float): EditMask {
+        val c = v.coerceIn(-100f, 100f)
+        return if (clarity == c) this else copy(clarity = c)
+    }
+
+    fun withBlur(v: Float): EditMask {
+        val c = v.coerceIn(0f, MAX_BLUR)
+        return if (blur == c) this else copy(blur = c)
+    }
+
+    fun withHueCenter(v: Float): EditMask {
+        val c = GradeAdjust.wrapHue(v)
+        return if (hueCenter == c) this else copy(hueCenter = c)
+    }
+
+    fun withHueRange(v: Float): EditMask {
+        val c = v.coerceIn(PointColorParams.MIN_RANGE, PointColorParams.MAX_RANGE)
+        return if (hueRange == c) this else copy(hueRange = c)
+    }
+
+    fun withSampledRgb(v: Int?): EditMask =
+        if (sampledRgb == v) this else copy(sampledRgb = v)
+
+    fun withLumaLo(v: Float): EditMask {
+        val c = v.coerceIn(0f, 1f)
+        return if (lumaLo == c) this else copy(lumaLo = c)
+    }
+
+    fun withLumaHi(v: Float): EditMask {
+        val c = v.coerceIn(0f, 1f)
+        return if (lumaHi == c) this else copy(lumaHi = c)
+    }
+
+    fun withLumaFeather(v: Float): EditMask {
+        val c = v.coerceIn(0f, 1f)
+        return if (lumaFeather == c) this else copy(lumaFeather = c)
+    }
+
+    fun isRangeTool(): Boolean = tool == MaskTool.COLOR || tool == MaskTool.LUMINANCE
+
+    fun hasLocalGrade(): Boolean =
+        exposure != 0f || temperature != 0f || saturation != 0f || clarity != 0f
+}
+
+/**
+ * M7 manual optics (§22). Manual-only: vignette correction, lateral CA shift
+ * and distortion. No lens-profile database (honest manual sliders, early-out
+ * at 0). Crop/transform-adjacent: honors StepKey.CROP in render.
+ */
+data class OpticsParams(
+    val vignetteCorr: Float = 0f,
+    val caShift: Float = 0f,
+    val distortion: Float = 0f
+) {
+    fun isDefault(): Boolean = vignetteCorr == 0f && caShift == 0f && distortion == 0f
+
+    fun withVignette(v: Float): OpticsParams {
+        val c = v.coerceIn(-100f, 100f)
+        return if (vignetteCorr == c) this else copy(vignetteCorr = c)
+    }
+
+    fun withCa(v: Float): OpticsParams {
+        val c = v.coerceIn(-10f, 10f)
+        return if (caShift == c) this else copy(caShift = c)
+    }
+
+    fun withDistortion(v: Float): OpticsParams {
+        val c = v.coerceIn(-100f, 100f)
+        return if (distortion == c) this else copy(distortion = c)
+    }
+
+    companion object {
+        const val CA_MIN = -10f
+        const val CA_MAX = 10f
     }
 }
 
@@ -654,6 +813,7 @@ data class EditParams(
     val masks: List<EditMask> = emptyList(),
     val grade: GradeParams = GradeParams(),
     val pointColor: PointColorParams = PointColorParams(),
+    val optics: OpticsParams = OpticsParams(),
     val steps: StepsEnabled = StepsEnabled()
 ) {
     fun get(control: AdjustControl): Float = when (control) {
@@ -719,7 +879,7 @@ data class EditParams(
     fun isDefault(): Boolean =
         isAdjustsDefault() && isHslDefault() && isCurvesDefault() &&
             isDetailsDefault() && isCropDefault() && isMasksDefault() &&
-            isGradeDefault() && isPointColorDefault()
+            isGradeDefault() && isPointColorDefault() && isOpticsDefault()
 
     fun toMap(): Map<String, Float> = AdjustControl.entries.associate { it.key to get(it) }
 
@@ -911,6 +1071,22 @@ data class EditParams(
 
     fun isMasksDefault(): Boolean = masks.isEmpty()
 
+    fun isOpticsDefault(): Boolean = optics.isDefault()
+
+    fun withOptics(optics: OpticsParams): EditParams =
+        if (this.optics == optics) this else copy(optics = optics)
+
+    fun withVignetteCorr(v: Float): EditParams = withOptics(optics.withVignette(v))
+
+    fun withCaShift(v: Float): EditParams = withOptics(optics.withCa(v))
+
+    fun withDistortion(v: Float): EditParams = withOptics(optics.withDistortion(v))
+
+    fun resetOptics(): EditParams {
+        if (optics.isDefault()) return this
+        return copy(optics = OpticsParams())
+    }
+
     fun withCrop(crop: CropParams): EditParams =
         if (this.crop == crop) this else copy(crop = crop)
 
@@ -922,6 +1098,13 @@ data class EditParams(
     fun rotateCrop90(): EditParams = withCrop(crop.rotated90())
 
     fun withStraighten(deg: Float): EditParams = withCrop(crop.withStraighten(deg))
+
+    fun withPerspectiveV(v: Float): EditParams = withCrop(crop.withPerspectiveV(v))
+
+    fun withPerspectiveH(v: Float): EditParams = withCrop(crop.withPerspectiveH(v))
+
+    fun withCustomAspect(w: Float, h: Float): EditParams =
+        withCrop(crop.withCustomAspect(w, h))
 
     fun toggleFlipH(): EditParams = withCrop(crop.withFlipH(!crop.flipH))
 
@@ -938,10 +1121,12 @@ data class EditParams(
         if (masks.size >= MAX_MASKS) return this
         val id = java.util.UUID.randomUUID().toString()
         // v1 masks grade exposure + temperature only. A fresh mask defaults to
-        // +1 EV (eraser excluded: it restores base pixels so its grade is unused)
-        // so adding a mask has an immediately visible effect. The previous 0 EV
-        // default made PreviewRenderer.applyMasks filter every new mask out as
-        // inactive, i.e. "add mask does nothing".
+        // M7 masks grade exposure + temperature + saturation + clarity (local).
+        // A fresh mask defaults to +1 EV (eraser excluded: it restores base
+        // pixels so its grade is unused) so adding a mask has an immediately
+        // visible effect. The previous 0 EV default made
+        // PreviewRenderer.applyMasks filter every new mask out as inactive,
+        // i.e. "add mask does nothing".
         val base = EditMask(
             id = id,
             tool = tool,
@@ -975,6 +1160,14 @@ data class EditParams(
             position = next.position.coerceIn(0f, 1f),
             exposure = next.exposure.coerceIn(-5f, 5f),
             temperature = next.temperature.coerceIn(-100f, 100f),
+            saturation = next.saturation.coerceIn(-100f, 100f),
+            clarity = next.clarity.coerceIn(-100f, 100f),
+            blur = next.blur.coerceIn(0f, EditMask.MAX_BLUR),
+            hueCenter = GradeAdjust.wrapHue(next.hueCenter),
+            hueRange = next.hueRange.coerceIn(PointColorParams.MIN_RANGE, PointColorParams.MAX_RANGE),
+            lumaLo = next.lumaLo.coerceIn(0f, 1f),
+            lumaHi = next.lumaHi.coerceIn(0f, 1f),
+            lumaFeather = next.lumaFeather.coerceIn(0f, 1f),
             points = EditMask.sanitizePoints(next.points)
         )
         var angle = next.angleDeg % 360f
@@ -1007,7 +1200,10 @@ data class EditParams(
     }
 
     companion object {
-        const val MAX_MASKS = 3
+        // M7: cap 3 -> 6. Each mask adds a full-frame alpha pass on preview
+        // size; 5-6 masks may exceed the <100ms preview budget on low-end
+        // devices (documented perf note, shown in MaskPanel).
+        const val MAX_MASKS = 6
         val DEFAULT = EditParams()
 
         fun defaultHslMap(): Map<HslColor, HslAdjust> =
@@ -1066,6 +1262,10 @@ object EditParamsJson {
         sb.append(",\"crop_ct\":").append(params.crop.customTop)
         sb.append(",\"crop_cr\":").append(params.crop.customRight)
         sb.append(",\"crop_cb\":").append(params.crop.customBottom)
+        sb.append(",\"crop_perspV\":").append(params.crop.perspectiveV)
+        sb.append(",\"crop_perspH\":").append(params.crop.perspectiveH)
+        sb.append(",\"crop_customW\":").append(params.crop.customW)
+        sb.append(",\"crop_customH\":").append(params.crop.customH)
         for (key in StepKey.entries) {
             sb.append(",\"step_").append(key.key).append("\":")
                 .append(if (params.steps.get(key)) "true" else "false")
@@ -1087,6 +1287,9 @@ object EditParamsJson {
         sb.append(",\"point_range\":").append(params.pointColor.hueRange)
         sb.append(",\"point_sat\":").append(params.pointColor.satAdjust)
         sb.append(",\"point_lum\":").append(params.pointColor.lumAdjust)
+        sb.append(",\"optics_vignette\":").append(params.optics.vignetteCorr)
+        sb.append(",\"optics_ca\":").append(params.optics.caShift)
+        sb.append(",\"optics_distortion\":").append(params.optics.distortion)
         sb.append(",\"masks\":[")
         params.masks.forEachIndexed { index, mask ->
             if (index > 0) sb.append(",")
@@ -1105,6 +1308,18 @@ object EditParamsJson {
             sb.append(",\"position\":").append(mask.position)
             sb.append(",\"exposure\":").append(mask.exposure)
             sb.append(",\"temperature\":").append(mask.temperature)
+            sb.append(",\"op\":\"").append(mask.op.name).append("\"")
+            sb.append(",\"saturation\":").append(mask.saturation)
+            sb.append(",\"clarity\":").append(mask.clarity)
+            sb.append(",\"blur\":").append(mask.blur)
+            sb.append(",\"hueCenter\":").append(mask.hueCenter)
+            sb.append(",\"hueRange\":").append(mask.hueRange)
+            sb.append(",\"sampledRgb\":")
+            if (mask.sampledRgb == null) sb.append("null")
+            else sb.append("\"#").append(String.format("%08X", mask.sampledRgb)).append("\"")
+            sb.append(",\"lumaLo\":").append(mask.lumaLo)
+            sb.append(",\"lumaHi\":").append(mask.lumaHi)
+            sb.append(",\"lumaFeather\":").append(mask.lumaFeather)
             sb.append(",\"points\":[")
             mask.points.forEachIndexed { pi, p ->
                 if (pi > 0) sb.append(",")
@@ -1167,9 +1382,16 @@ object EditParamsJson {
             val cropCt = extractNumber(json, "crop_ct")
             val cropCr = extractNumber(json, "crop_cr")
             val cropCb = extractNumber(json, "crop_cb")
+            // M7 keys (missing = pre-M7 JSON defaults).
+            val cropPerspV = extractNumber(json, "crop_perspV")
+            val cropPerspH = extractNumber(json, "crop_perspH")
+            val cropCustomW = extractNumber(json, "crop_customW")
+            val cropCustomH = extractNumber(json, "crop_customH")
             if (cropRatio != null || cropRotation != null || cropStraighten != null ||
                 cropFlipH != null || cropFlipV != null ||
-                cropCl != null || cropCt != null || cropCr != null || cropCb != null
+                cropCl != null || cropCt != null || cropCr != null || cropCb != null ||
+                cropPerspV != null || cropPerspH != null ||
+                cropCustomW != null || cropCustomH != null
             ) {
                 val base = params.crop
                 params = params.withCrop(
@@ -1182,7 +1404,11 @@ object EditParamsJson {
                         customLeft = cropCl ?: base.customLeft,
                         customTop = cropCt ?: base.customTop,
                         customRight = cropCr ?: base.customRight,
-                        customBottom = cropCb ?: base.customBottom
+                        customBottom = cropCb ?: base.customBottom,
+                        perspectiveV = (cropPerspV ?: base.perspectiveV).coerceIn(-100f, 100f),
+                        perspectiveH = (cropPerspH ?: base.perspectiveH).coerceIn(-100f, 100f),
+                        customW = (cropCustomW ?: base.customW).coerceIn(0.1f, 99f),
+                        customH = (cropCustomH ?: base.customH).coerceIn(0.1f, 99f)
                     ).withCustomRect(
                         cropCl ?: base.customLeft,
                         cropCt ?: base.customTop,
@@ -1246,6 +1472,17 @@ object EditParamsJson {
                 pointSat?.let { pc = pc.withSat(it) }
                 pointLum?.let { pc = pc.withLum(it) }
                 params = params.copy(pointColor = pc)
+            }
+            // M7 optics keys (missing = pre-M7 JSON defaults at 0).
+            val opticsV = extractNumber(json, "optics_vignette")
+            val opticsCa = extractNumber(json, "optics_ca")
+            val opticsDist = extractNumber(json, "optics_distortion")
+            if (opticsV != null || opticsCa != null || opticsDist != null) {
+                var o = params.optics
+                opticsV?.let { o = o.withVignette(it) }
+                opticsCa?.let { o = o.withCa(it) }
+                opticsDist?.let { o = o.withDistortion(it) }
+                params = params.copy(optics = o)
             }
             extractMasks(json)?.let { params = params.copy(masks = it) }
             params
@@ -1337,6 +1574,20 @@ object EditParamsJson {
         val position = extractNumber(obj, "position")?.coerceIn(0f, 1f) ?: 0.5f
         val exposure = extractNumber(obj, "exposure")?.coerceIn(-5f, 5f) ?: 0f
         val temperature = extractNumber(obj, "temperature")?.coerceIn(-100f, 100f) ?: 0f
+        // M7 keys only (missing = pre-M7 JSON defaults).
+        val op = extractStringOrNull(obj, "op")?.let { MaskOp.fromKey(it) } ?: MaskOp.ADD
+        val saturation = extractNumber(obj, "saturation")?.coerceIn(-100f, 100f) ?: 0f
+        val clarity = extractNumber(obj, "clarity")?.coerceIn(-100f, 100f) ?: 0f
+        val blur = extractNumber(obj, "blur")?.coerceIn(0f, EditMask.MAX_BLUR) ?: 0f
+        val hueCenterRaw = extractNumber(obj, "hueCenter") ?: 0f
+        var hueCenter = hueCenterRaw % 360f
+        if (hueCenter < 0f) hueCenter += 360f
+        val hueRange = extractNumber(obj, "hueRange")
+            ?.coerceIn(PointColorParams.MIN_RANGE, PointColorParams.MAX_RANGE) ?: 60f
+        val sampledRgb = extractStringOrNull(obj, "sampledRgb")?.let { parseHexArgb(it) }
+        val lumaLo = extractNumber(obj, "lumaLo")?.coerceIn(0f, 1f) ?: 0f
+        val lumaHi = extractNumber(obj, "lumaHi")?.coerceIn(0f, 1f) ?: 1f
+        val lumaFeather = extractNumber(obj, "lumaFeather")?.coerceIn(0f, 1f) ?: 0.2f
         val points = extractMaskPoints(obj) ?: emptyList()
         return EditMask(
             id = id,
@@ -1353,7 +1604,17 @@ object EditParamsJson {
             position = position,
             points = EditMask.sanitizePoints(points),
             exposure = exposure,
-            temperature = temperature
+            temperature = temperature,
+            op = op,
+            saturation = saturation,
+            clarity = clarity,
+            blur = blur,
+            hueCenter = hueCenter,
+            hueRange = hueRange,
+            sampledRgb = sampledRgb,
+            lumaLo = lumaLo,
+            lumaHi = lumaHi,
+            lumaFeather = lumaFeather
         )
     }
 
