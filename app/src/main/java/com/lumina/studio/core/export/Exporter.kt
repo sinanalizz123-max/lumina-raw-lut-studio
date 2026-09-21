@@ -17,7 +17,7 @@ import com.lumina.studio.core.data.local.Project
 import com.lumina.studio.core.edit.EditParams
 import com.lumina.studio.core.edit.EditParamsJson
 import com.lumina.studio.core.lut.LutCube
-import com.lumina.studio.core.render.PreviewRenderer
+import com.lumina.studio.core.render.cpu.RenderBackends
 import com.lumina.studio.core.util.ImageFiles
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -123,28 +123,7 @@ object Exporter {
         lut: LutCube?,
         targetW: Int,
         targetH: Int
-    ): Bitmap {
-        val rendered = PreviewRenderer.render(src, params, lut)
-        if (targetW <= 0 || targetH <= 0) return rendered
-        if (rendered.width == targetW && rendered.height == targetH) return rendered
-        val rw = rendered.width
-        val rh = rendered.height
-        if (rw <= 0 || rh <= 0) return rendered
-        // Crop-aware: target dims describe the pre-crop source, so a blind
-        // scale to targetW x targetH would stretch a cropped/rotated render
-        // back to the source frame and silently undo the crop. Fit instead:
-        // keep the rendered bitmap when it already fits (allowing swapped
-        // orientation for 90-degree rotations), else downscale preserving aspect.
-        if ((rw <= targetW && rh <= targetH) || (rw <= targetH && rh <= targetW)) return rendered
-        val scale = minOf(targetW.toFloat() / rw, targetH.toFloat() / rh).coerceIn(0f, 1f)
-        if (scale <= 0f || !scale.isFinite()) return rendered
-        val outW = (rw * scale + 0.5f).toInt().coerceIn(1, rw)
-        val outH = (rh * scale + 0.5f).toInt().coerceIn(1, rh)
-        if (outW == rw && outH == rh) return rendered
-        val scaled = Bitmap.createScaledBitmap(rendered, outW, outH, true)
-        if (scaled !== rendered && rendered !== src) rendered.recycle()
-        return scaled
-    }
+    ): Bitmap = RenderBackends.export().renderForExport(src, params, lut, targetW, targetH)
 
     fun compress(bitmap: Bitmap, settings: ExportSettings): ByteArray {
         if (settings.format == ExportFormat.TIFF) return encodeTiff(bitmap)

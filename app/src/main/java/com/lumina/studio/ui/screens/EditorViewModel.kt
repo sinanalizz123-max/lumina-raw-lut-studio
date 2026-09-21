@@ -34,7 +34,14 @@ import com.lumina.studio.core.edit.withEditParams
 import com.lumina.studio.core.lut.BuiltInPresets
 import com.lumina.studio.core.lut.LutCube
 import com.lumina.studio.core.lut.LutRegistry
+import com.lumina.studio.core.render.GenerationTracker
+import com.lumina.studio.core.render.ImageDecoder
 import com.lumina.studio.core.render.PreviewRenderer
+import com.lumina.studio.core.render.RenderRequest
+import com.lumina.studio.core.render.RenderResult
+import com.lumina.studio.core.render.RenderSource
+import com.lumina.studio.core.render.RenderTarget
+import com.lumina.studio.core.render.cpu.RenderBackends
 import com.lumina.studio.core.util.ExifOrientation
 import com.lumina.studio.core.util.ImageOrientation
 import com.lumina.studio.ui.editor.EditorTool
@@ -168,6 +175,35 @@ class EditorViewModel(application: Application, private val projectId: String?) 
     // Medium 1200 / Low 800). Loaded from SettingsRepository in load(), refreshable live.
     private var gpuEnabled = true
     private var previewMaxDim = PreviewRenderer.MAX_PREVIEW_DIM
+    private val previewGenerations = GenerationTracker()
+    private val fullscreenGenerations = GenerationTracker()
+
+    private fun appDecoder(): ImageDecoder<Bitmap> =
+        RenderBackends.decoder(getApplication())
+
+    private fun gradeThroughBackend(
+        base: Bitmap,
+        params: EditParams,
+        lut: LutCube?,
+        target: RenderTarget,
+        generation: Long
+    ): Bitmap? {
+        return when (
+            val result = RenderBackends.cpu().render(
+                RenderRequest(
+                    params = params,
+                    lut = lut,
+                    source = base,
+                    target = target,
+                    generation = generation
+                )
+            )
+        ) {
+            is RenderResult.Ok -> result.bitmap
+            is RenderResult.Unavailable -> null
+            RenderResult.OomBudget -> null
+        }
+    }
 
     init {
         if (!projectId.isNullOrBlank()) load(projectId) else _loading.value = false
@@ -342,10 +378,7 @@ class EditorViewModel(application: Application, private val projectId: String?) 
                     _largeDecoding.value = true
                 }
                 try {
-                    PreviewRenderer.decodePreview(file.absolutePath, maxDim) ?: run {
-                        val opts = BitmapFactory.Options().apply { inPreferredConfig = Bitmap.Config.ARGB_8888 }
-                        BitmapFactory.decodeFile(file.absolutePath, opts)
-                    }
+                    appDecoder().decode(RenderSource.File(file.absolutePath), maxDim)
                 } finally {
                     if (large) _largeDecoding.value = false
                 }
@@ -881,14 +914,22 @@ class EditorViewModel(application: Application, private val projectId: String?) 
     private fun renderPreview() {
         renderJob?.cancel()
         _paramsRevision.value = _paramsRevision.value + 1
+        val generation = previewGenerations.next()
         renderJob = viewModelScope.launch(Dispatchers.Default) {
             val base = baseBitmap ?: return@launch
             val params = _params.value
             val lut = LutRegistry.resolve(params.presetId)
-            val out = try {
-                PreviewRenderer.render(base, params, lut)
-            } catch (_: Exception) {
-                null
+            val out = gradeThroughBackend(
+                base, params, lut, RenderTarget.Preview(previewMaxDim), generation
+            )
+            // §53: Job.cancel cannot preempt blocking Bitmap work, so a
+            // superseded render may still finish. Stale results must never
+            // overwrite the current preview.
+            if (previewGenerations.isStale(generation)) {
+                if (out != null && out !== base) {
+                    runCatching { if (!out.isRecycled) out.recycle() }
+                }
+                return@launch
             }
             _preview.value = out
             // Phase 4B: histogram auto-recompute on every render runs only with GPU
@@ -905,6 +946,7 @@ class EditorViewModel(application: Application, private val projectId: String?) 
     private fun scheduleFullscreenRender(immediate: Boolean) {
         if (!_fullscreen.value) return
         fullscreenJob?.cancel()
+        val generation = fullscreenGenerations.next()
         fullscreenJob = viewModelScope.launch(Dispatchers.Default) {
             try {
                 if (!immediate) delay(FULLSCREEN_DEBOUNCE_MS)
@@ -914,18 +956,30 @@ class EditorViewModel(application: Application, private val projectId: String?) 
                 val decoded = withContext(Dispatchers.IO) { decodeFullscreenBitmap(path) }
                     ?: return@launch
                 ensureActive()
-                val rendered = try {
-                    PreviewRenderer.render(decoded, params, lut)
-                } catch (_: Exception) {
-                    null
-                } catch (_: OutOfMemoryError) {
-                    null
-                }
+                val rendered = gradeThroughBackend(
+                    decoded, params, lut,
+                    RenderTarget.Fullscreen(FULLSCREEN_MAX_DIM), generation
+                )
                 ensureActive()
                 if (rendered == null) {
                     try {
                         if (!decoded.isRecycled) decoded.recycle()
                     } catch (_: Exception) {
+                    }
+                    return@launch
+                }
+                // §53: same stale-drop as the preview path — a superseded
+                // fullscreen render must never overwrite the current one.
+                if (fullscreenGenerations.isStale(generation)) {
+                    try {
+                        if (!rendered.isRecycled) rendered.recycle()
+                    } catch (_: Exception) {
+                    }
+                    if (rendered !== decoded) {
+                        try {
+                            if (!decoded.isRecycled) decoded.recycle()
+                        } catch (_: Exception) {
+                        }
                     }
                     return@launch
                 }
@@ -955,11 +1009,14 @@ class EditorViewModel(application: Application, private val projectId: String?) 
             val file = File(pathOrUri)
             if (file.exists()) {
                 val hiRes = runCatching {
-                    PreviewRenderer.decodePreview(file.absolutePath, FULLSCREEN_MAX_DIM)
+                    appDecoder().decode(RenderSource.File(file.absolutePath), FULLSCREEN_MAX_DIM)
                 }.getOrNull()
                 if (hiRes != null) return hiRes
                 runCatching {
-                    PreviewRenderer.decodePreview(file.absolutePath, PreviewRenderer.MAX_PREVIEW_DIM)
+                    appDecoder().decode(
+                        RenderSource.File(file.absolutePath),
+                        PreviewRenderer.MAX_PREVIEW_DIM
+                    )
                 }.getOrNull()
             } else {
                 runCatching {
@@ -988,7 +1045,14 @@ class EditorViewModel(application: Application, private val projectId: String?) 
         } catch (_: OutOfMemoryError) {
             runCatching {
                 val file = File(pathOrUri)
-                if (file.exists()) PreviewRenderer.decodePreview(file.absolutePath, PreviewRenderer.MAX_PREVIEW_DIM) else null
+                if (file.exists()) {
+                    appDecoder().decode(
+                        RenderSource.File(file.absolutePath),
+                        PreviewRenderer.MAX_PREVIEW_DIM
+                    )
+                } else {
+                    null
+                }
             }.getOrNull()
         } catch (_: Exception) {
             null
@@ -1149,13 +1213,13 @@ class EditorViewModel(application: Application, private val projectId: String?) 
             return
         }
         val renderStartMs = SystemClock.elapsedRealtime()
-        val rendered: Bitmap? = try {
-            PreviewRenderer.render(raw, paramsSnap, lut)
-        } catch (_: Exception) {
-            null
-        } catch (_: OutOfMemoryError) {
-            null
-        }
+        // The params revision captured above is this tile's generation token:
+        // a params change bumps _paramsRevision, so a tile that finishes late
+        // is dropped below and never overwrites the current viewport (§53).
+        val rendered: Bitmap? = gradeThroughBackend(
+            raw, paramsSnap, lut,
+            RenderTarget.Tile(ZOOM_TILE_MAX_PIXELS.toLong()), revision
+        )
         val renderMs = SystemClock.elapsedRealtime() - renderStartMs
         Log.d(
             TAG_ZOOM_TILE,
