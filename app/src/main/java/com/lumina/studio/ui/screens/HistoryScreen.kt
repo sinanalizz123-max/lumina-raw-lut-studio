@@ -70,7 +70,7 @@ private enum class HistoryStep(
         PRESET -> params.presetId != null
         LUT -> params.presetId != null
         ADJUSTMENTS -> !params.isAdjustsDefault()
-        COLOR -> !params.isHslDefault()
+        COLOR -> !params.isHslDefault() || !params.isGradeDefault() || !params.isPointColorDefault()
         CURVES -> !params.isCurvesDefault()
         DETAILS -> !params.isDetailsDefault()
         MASKS -> params.masks.isNotEmpty()
@@ -82,7 +82,7 @@ private enum class HistoryStep(
         PRESET -> params.presetId ?: "Empty — no preset"
         LUT -> if (params.presetId == null) "Empty — no LUT" else "Intensity ${(params.presetIntensity * 100f).roundToInt()}%"
         ADJUSTMENTS -> if (params.isAdjustsDefault()) "Empty" else "Exposure ${params.exposure} • Contrast ${params.contrast.roundToInt()}"
-        COLOR -> if (params.isHslDefault()) "Empty" else "HSL edits"
+        COLOR -> if (params.isHslDefault() && params.isGradeDefault() && params.isPointColorDefault()) "Empty" else "Color edits"
         CURVES -> if (params.isCurvesDefault()) "Empty — diagonal" else "Custom curves"
         DETAILS -> if (params.isDetailsDefault()) "Empty" else "Texture/clarity/NR"
         MASKS -> if (params.masks.isEmpty()) "Empty" else "${params.masks.size} mask(s)"

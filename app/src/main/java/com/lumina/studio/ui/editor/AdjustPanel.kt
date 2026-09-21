@@ -2,18 +2,24 @@ package com.lumina.studio.ui.editor
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.lumina.studio.core.design.components.ProSlider
+import com.lumina.studio.core.design.theme.LuminaCaptionTextStyle
+import com.lumina.studio.core.design.theme.LuminaMuted
 import com.lumina.studio.core.design.theme.LuminaOnSurface
 import com.lumina.studio.core.design.theme.LuminaSectionHeaderTextStyle
 import com.lumina.studio.core.design.theme.LuminaSurfaceContainerHigh
@@ -26,7 +32,8 @@ fun AdjustPanel(
     params: EditParams,
     onControl: (AdjustControl, Float) -> Unit,
     onResetControl: (AdjustControl) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onAuto: () -> Unit = {}
 ) {
     Column(
         modifier = modifier
@@ -34,10 +41,25 @@ fun AdjustPanel(
             .padding(horizontal = 16.dp, vertical = 4.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "Adjust",
+                style = LuminaSectionHeaderTextStyle,
+                color = LuminaOnSurface,
+                modifier = Modifier.weight(1f)
+            )
+            TextButton(
+                onClick = onAuto,
+                modifier = Modifier.heightIn(min = 48.dp)
+            ) { Text("Auto") }
+        }
         Text(
-            text = "Adjust",
-            style = LuminaSectionHeaderTextStyle,
-            color = LuminaOnSurface
+            text = "Auto sets exposure + contrast from a simple levels analysis — not AI.",
+            style = LuminaCaptionTextStyle,
+            color = LuminaMuted
         )
         HorizontalDivider(color = LuminaSurfaceContainerHigh)
         AdjustControl.entries.forEach { control ->

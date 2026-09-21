@@ -17,6 +17,7 @@ import com.lumina.studio.core.data.local.DatabaseProvider
 import com.lumina.studio.core.data.local.EditHistoryLog
 import com.lumina.studio.core.data.local.Project
 import com.lumina.studio.core.edit.AdjustControl
+import com.lumina.studio.core.edit.AutoLevels
 import com.lumina.studio.core.edit.CropRatio
 import com.lumina.studio.core.edit.CurveChannel
 import com.lumina.studio.core.edit.CurvePoint
@@ -24,6 +25,9 @@ import com.lumina.studio.core.edit.Curves
 import com.lumina.studio.core.edit.DetailControl
 import com.lumina.studio.core.edit.EditMask
 import com.lumina.studio.core.edit.EditParams
+import com.lumina.studio.core.edit.GradeAdjust
+import com.lumina.studio.core.edit.GradeHsl
+import com.lumina.studio.core.edit.GradeZone
 import com.lumina.studio.core.edit.HslAdjust
 import com.lumina.studio.core.edit.HslColor
 import com.lumina.studio.core.edit.MaskPoint
@@ -127,6 +131,18 @@ class EditorViewModel(application: Application, private val projectId: String?) 
 
     private val _eyedropperArmed = MutableStateFlow(false)
     val eyedropperArmed: StateFlow<Boolean> = _eyedropperArmed.asStateFlow()
+
+    private val _selectedGradeZone = MutableStateFlow(GradeZone.GLOBAL)
+    val selectedGradeZone: StateFlow<GradeZone> = _selectedGradeZone.asStateFlow()
+
+    private val _pointEyedropperArmed = MutableStateFlow(false)
+    val pointEyedropperArmed: StateFlow<Boolean> = _pointEyedropperArmed.asStateFlow()
+
+    private val _showPointAffected = MutableStateFlow(false)
+    val showPointAffected: StateFlow<Boolean> = _showPointAffected.asStateFlow()
+
+    private val _pointColorMask = MutableStateFlow<Bitmap?>(null)
+    val pointColorMask: StateFlow<Bitmap?> = _pointColorMask.asStateFlow()
 
     private val _selectedCurve = MutableStateFlow(CurveChannel.MASTER)
     val selectedCurve: StateFlow<CurveChannel> = _selectedCurve.asStateFlow()
@@ -514,6 +530,249 @@ class EditorViewModel(application: Application, private val projectId: String?) 
         syncUndoRedo()
         renderPreview()
         schedulePersist()
+    }
+
+    fun selectGradeZone(zone: GradeZone) {
+        _selectedGradeZone.value = zone
+    }
+
+    fun updateGradeZone(zone: GradeZone, adjust: GradeAdjust) {
+        val current = _params.value
+        val next = current.withGrade(zone, adjust)
+        if (next == current) return
+        pushUndo(current)
+        redoStack.clear()
+        _params.value = next
+        syncUndoRedo()
+        renderPreview()
+        schedulePersist(EditHistoryLog.COLOR)
+    }
+
+    fun updateGradeHue(zone: GradeZone, value: Float) {
+        updateGradeZone(zone, _params.value.getGrade(zone).copy(hue = GradeAdjust.wrapHue(value)))
+    }
+
+    fun updateGradeSat(zone: GradeZone, value: Float) {
+        updateGradeZone(zone, _params.value.getGrade(zone).copy(sat = value.coerceIn(0f, 100f)))
+    }
+
+    fun updateGradeLum(zone: GradeZone, value: Float) {
+        updateGradeZone(zone, _params.value.getGrade(zone).copy(lum = value.coerceIn(-100f, 100f)))
+    }
+
+    fun resetGradeZone(zone: GradeZone) {
+        val current = _params.value
+        val next = current.resetGradeZone(zone)
+        if (next == current) return
+        pushUndo(current)
+        redoStack.clear()
+        _params.value = next
+        syncUndoRedo()
+        renderPreview()
+        schedulePersist(EditHistoryLog.COLOR)
+    }
+
+    fun updateGradeBlending(value: Float) {
+        val current = _params.value
+        val next = current.withGradeBlending(value)
+        if (next == current) return
+        pushUndo(current)
+        redoStack.clear()
+        _params.value = next
+        syncUndoRedo()
+        renderPreview()
+        schedulePersist(EditHistoryLog.COLOR)
+    }
+
+    fun updateGradeBalance(value: Float) {
+        val current = _params.value
+        val next = current.withGradeBalance(value)
+        if (next == current) return
+        pushUndo(current)
+        redoStack.clear()
+        _params.value = next
+        syncUndoRedo()
+        renderPreview()
+        schedulePersist(EditHistoryLog.COLOR)
+    }
+
+    fun resetGradeAll() {
+        val current = _params.value
+        if (current.isGradeDefault()) return
+        pushUndo(current)
+        redoStack.clear()
+        _params.value = current.resetGradeAll()
+        syncUndoRedo()
+        renderPreview()
+        schedulePersist(EditHistoryLog.COLOR)
+    }
+
+    fun beginGradeEdit() {
+        pushUndo(_params.value)
+        redoStack.clear()
+        syncUndoRedo()
+    }
+
+    fun moveGradeZoneLive(zone: GradeZone, adjust: GradeAdjust) {
+        val current = _params.value
+        val next = current.withGrade(zone, adjust)
+        if (next == current) return
+        _params.value = next
+        renderPreview()
+        schedulePersist(EditHistoryLog.COLOR)
+    }
+
+    fun setPointEnabled(enabled: Boolean) {
+        val current = _params.value
+        val next = current.withPointEnabled(enabled)
+        if (next == current) return
+        pushUndo(current)
+        redoStack.clear()
+        _params.value = next
+        syncUndoRedo()
+        renderPreview()
+        schedulePersist(EditHistoryLog.COLOR)
+    }
+
+    fun setPointEyedropperArmed(armed: Boolean) {
+        _pointEyedropperArmed.value = armed
+    }
+
+    fun pointEyedropperPick(argb: Int) {
+        val hue = GradeHsl.argbToHueDeg(argb)
+        val current = _params.value
+        val next = current.withPointSample(argb, hue)
+        _pointEyedropperArmed.value = false
+        if (next == current) return
+        pushUndo(current)
+        redoStack.clear()
+        _params.value = next
+        syncUndoRedo()
+        renderPreview()
+        schedulePersist(EditHistoryLog.COLOR)
+    }
+
+    fun updatePointHueCenter(value: Float) {
+        val current = _params.value
+        val next = current.withPointHueCenter(value)
+        if (next == current) return
+        pushUndo(current)
+        redoStack.clear()
+        _params.value = next
+        syncUndoRedo()
+        renderPreview()
+        schedulePersist(EditHistoryLog.COLOR)
+    }
+
+    fun updatePointHueRange(value: Float) {
+        val current = _params.value
+        val next = current.withPointHueRange(value)
+        if (next == current) return
+        pushUndo(current)
+        redoStack.clear()
+        _params.value = next
+        syncUndoRedo()
+        renderPreview()
+        schedulePersist(EditHistoryLog.COLOR)
+    }
+
+    fun updatePointSat(value: Float) {
+        val current = _params.value
+        val next = current.withPointSat(value)
+        if (next == current) return
+        pushUndo(current)
+        redoStack.clear()
+        _params.value = next
+        syncUndoRedo()
+        renderPreview()
+        schedulePersist(EditHistoryLog.COLOR)
+    }
+
+    fun updatePointLum(value: Float) {
+        val current = _params.value
+        val next = current.withPointLum(value)
+        if (next == current) return
+        pushUndo(current)
+        redoStack.clear()
+        _params.value = next
+        syncUndoRedo()
+        renderPreview()
+        schedulePersist(EditHistoryLog.COLOR)
+    }
+
+    fun resetPointColor() {
+        val current = _params.value
+        if (current.pointColor == com.lumina.studio.core.edit.PointColorParams()) return
+        pushUndo(current)
+        redoStack.clear()
+        _params.value = current.resetPointColor()
+        syncUndoRedo()
+        renderPreview()
+        schedulePersist(EditHistoryLog.COLOR)
+    }
+
+    fun setShowPointAffected(show: Boolean) {
+        _showPointAffected.value = show
+        if (show) {
+            refreshPointColorMask()
+        } else {
+            clearPointColorMask()
+        }
+    }
+
+    private fun refreshPointColorMask() {
+        viewModelScope.launch(Dispatchers.Default) {
+            val src = _preview.value ?: baseBitmap ?: return@launch
+            if (src.isRecycled) return@launch
+            val mask = try {
+                PreviewRenderer.buildPointColorMask(src, _params.value)
+            } catch (_: Exception) {
+                null
+            }
+            val old = _pointColorMask.value
+            _pointColorMask.value = mask
+            recycleMaskBitmap(old)
+        }
+    }
+
+    private fun clearPointColorMask() {
+        val old = _pointColorMask.value
+        _pointColorMask.value = null
+        recycleMaskBitmap(old)
+    }
+
+    private fun recycleMaskBitmap(bitmap: Bitmap?) {
+        if (bitmap == null) return
+        try {
+            if (!bitmap.isRecycled) bitmap.recycle()
+        } catch (_: Exception) {
+        }
+    }
+
+    fun autoLight() {
+        viewModelScope.launch {
+            val suggestion = withContext(Dispatchers.Default) {
+                val base = baseBitmap ?: return@withContext null
+                if (runCatching { base.isRecycled }.getOrDefault(true)) return@withContext null
+                try {
+                    AutoLevels.suggest(PreviewRenderer.computeHistogram(base))
+                } catch (_: Exception) {
+                    null
+                }
+            } ?: return@launch
+            val current = _params.value
+            val next = current.copy(
+                exposure = AdjustControl.EXPOSURE.clamp(suggestion.exposure),
+                contrast = AdjustControl.CONTRAST.clamp(suggestion.contrast)
+            )
+            if (next == current) return@launch
+            pushUndo(current)
+            redoStack.clear()
+            _params.value = next
+            syncUndoRedo()
+            renderPreview()
+            schedulePersist(EditHistoryLog.ADJUST)
+        }
     }
 
     fun selectCurveChannel(channel: CurveChannel) {
@@ -944,6 +1203,28 @@ class EditorViewModel(application: Application, private val projectId: String?) 
             if (_showHistogram.value && PreviewRenderer.shouldAutoHistogram(gpuEnabled)) {
                 val graded = out ?: base
                 if (graded != null) scheduleHistogram(graded)
+            }
+            // M6 point-color affected overlay: rebuilt from the latest rendered
+            // frame while the toggle is on (cheap small-bitmap approx); cleared
+            // otherwise so a stale selection never lingers.
+            if (_showPointAffected.value && !params.isPointColorDefault()) {
+                val graded = out ?: base
+                val mask = if (graded != null && !graded.isRecycled) {
+                    try {
+                        PreviewRenderer.buildPointColorMask(graded, params)
+                    } catch (_: Exception) {
+                        null
+                    }
+                } else {
+                    null
+                }
+                val old = _pointColorMask.value
+                _pointColorMask.value = mask
+                recycleMaskBitmap(old)
+            } else if (_pointColorMask.value != null) {
+                val old = _pointColorMask.value
+                _pointColorMask.value = null
+                recycleMaskBitmap(old)
             }
         }
         if (_fullscreen.value) scheduleFullscreenRender(immediate = false)
@@ -1380,6 +1661,8 @@ class EditorViewModel(application: Application, private val projectId: String?) 
         } catch (_: Exception) {
         }
         _zoomTile.value = null
+        recycleMaskBitmap(_pointColorMask.value)
+        _pointColorMask.value = null
         closeRegionDecoder()
         try {
             _fullscreenPreview.value?.takeIf { !it.isRecycled }?.recycle()

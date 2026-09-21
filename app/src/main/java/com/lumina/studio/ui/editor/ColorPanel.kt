@@ -37,6 +37,7 @@ import com.lumina.studio.core.design.theme.LuminaSectionHeaderTextStyle
 import com.lumina.studio.core.design.theme.LuminaSurfaceContainerHigh
 import com.lumina.studio.core.edit.EditParams
 import com.lumina.studio.core.edit.HslColor
+import com.lumina.studio.core.edit.PointColorParams
 import kotlin.math.roundToInt
 
 private fun hslDisplayColor(color: HslColor): Color = when (color) {
@@ -69,7 +70,18 @@ fun ColorPanel(
     onResetGlobalSat: () -> Unit,
     onResetGlobalVib: () -> Unit,
     onResetAll: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    point: PointColorParams = params.pointColor,
+    pointEyedropperArmed: Boolean = false,
+    onPointEnabled: (Boolean) -> Unit = {},
+    onPointPickToggle: (Boolean) -> Unit = {},
+    onPointHue: (Float) -> Unit = {},
+    onPointRange: (Float) -> Unit = {},
+    onPointSat: (Float) -> Unit = {},
+    onPointLum: (Float) -> Unit = {},
+    onResetPoint: () -> Unit = {},
+    showPointAffected: Boolean = false,
+    onTogglePointAffected: (Boolean) -> Unit = {}
 ) {
     val adjust = params.getHsl(selected)
     Column(
@@ -196,6 +208,105 @@ fun ColorPanel(
                 onClick = onResetAll,
                 modifier = Modifier.heightIn(min = 48.dp)
             ) { Text("Reset HSL") }
+        }
+        Spacer(modifier = Modifier.height(4.dp))
+        HorizontalDivider(color = LuminaSurfaceContainerHigh)
+        // M6 point color (§18) lives as a compact section inside the COLOR
+        // panel (deliberate: keeps the flat tool row from overcrowding per
+        // §72/§9) while grading gets its own GRADE tool.
+        Text(
+            text = "Point color",
+            style = LuminaSectionHeaderTextStyle,
+            color = LuminaOnSurface
+        )
+        Text(
+            text = "Tweak one picked hue. Non-destructive; stored in the recipe.",
+            style = LuminaCaptionTextStyle,
+            color = LuminaMuted
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            val swatch = point.sampledRgb
+            if (swatch != null) {
+                Box(
+                    modifier = Modifier
+                        .size(48.dp)
+                        .clip(CircleShape)
+                        .background(Color(swatch))
+                        .border(1.dp, Color.White.copy(alpha = 0.35f), CircleShape)
+                )
+            }
+            Spacer(modifier = Modifier.weight(1f))
+            TextButton(
+                onClick = { onPointEnabled(!point.enabled) },
+                modifier = Modifier.heightIn(min = 48.dp)
+            ) { Text(if (point.enabled) "Enabled: on" else "Enable") }
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            TextButton(
+                onClick = { onPointPickToggle(!pointEyedropperArmed) },
+                modifier = Modifier.heightIn(min = 48.dp)
+            ) {
+                Text(if (pointEyedropperArmed) "● Picking… tap photo" else "Pick from photo")
+            }
+            Spacer(modifier = Modifier.weight(1f))
+            TextButton(
+                onClick = onResetPoint,
+                modifier = Modifier.heightIn(min = 48.dp)
+            ) { Text("Reset point") }
+        }
+        if (pointEyedropperArmed) {
+            Text(
+                text = "Tap the photo to sample the hue center.",
+                style = LuminaCaptionTextStyle,
+                color = LuminaMuted
+            )
+        }
+        ProSlider(
+            label = "Hue center",
+            value = point.hueCenter,
+            onValueChange = onPointHue,
+            valueRange = 0f..360f,
+            displayValue = "${point.hueCenter.roundToInt()}°",
+            onReset = onResetPoint
+        )
+        ProSlider(
+            label = "Hue range",
+            value = point.hueRange,
+            onValueChange = onPointRange,
+            valueRange = PointColorParams.MIN_RANGE..PointColorParams.MAX_RANGE,
+            displayValue = "±${point.hueRange.roundToInt()}°",
+            onReset = onResetPoint
+        )
+        ProSlider(
+            label = "Point saturation",
+            value = point.satAdjust,
+            onValueChange = onPointSat,
+            valueRange = -100f..100f,
+            displayValue = formatHsl(point.satAdjust),
+            onReset = onResetPoint
+        )
+        ProSlider(
+            label = "Point luminance",
+            value = point.lumAdjust,
+            onValueChange = onPointLum,
+            valueRange = -100f..100f,
+            displayValue = formatHsl(point.lumAdjust),
+            onReset = onResetPoint
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End
+        ) {
+            TextButton(
+                onClick = { onTogglePointAffected(!showPointAffected) },
+                modifier = Modifier.heightIn(min = 48.dp)
+            ) { Text(if (showPointAffected) "Hide affected" else "Show affected") }
         }
     }
 }

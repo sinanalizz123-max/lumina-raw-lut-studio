@@ -56,6 +56,8 @@ import com.lumina.studio.core.edit.CropRatio
 import com.lumina.studio.core.edit.CurveChannel
 import com.lumina.studio.core.edit.DetailControl
 import com.lumina.studio.core.edit.EditParams
+import com.lumina.studio.core.edit.GradeAdjust
+import com.lumina.studio.core.edit.GradeZone
 import com.lumina.studio.core.edit.HslColor
 import com.lumina.studio.core.edit.MaskTool
 import com.lumina.studio.ui.presets.PresetThumb
@@ -78,7 +80,8 @@ fun EditorToolPanel(
     params: EditParams,
     onControl: (AdjustControl, Float) -> Unit,
     onResetControl: (AdjustControl) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onAuto: () -> Unit = {}
 ) {
     when (tool) {
         EditorTool.PRESETS -> PresetsToolPanel(
@@ -94,6 +97,7 @@ fun EditorToolPanel(
             params = params,
             onControl = onControl,
             onResetControl = onResetControl,
+            onAuto = onAuto,
             modifier = modifier
         )
         EditorTool.COLOR -> ColorPanel(
@@ -111,6 +115,10 @@ fun EditorToolPanel(
             onResetGlobalSat = {},
             onResetGlobalVib = {},
             onResetAll = {},
+            modifier = modifier
+        )
+        EditorTool.GRADE -> GradePanel(
+            params = params,
             modifier = modifier
         )
         EditorTool.CURVES -> CurvesPanel(
@@ -179,7 +187,8 @@ fun EditorToolPanel(
     onPresetIntensity: (Float) -> Unit,
     onClearPreset: () -> Unit,
     onOpenLibrary: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onAuto: () -> Unit = {}
 ) {
     when (tool) {
         EditorTool.PRESETS -> PresetsToolPanel(
@@ -196,7 +205,8 @@ fun EditorToolPanel(
             params = params,
             onControl = onControl,
             onResetControl = onResetControl,
-            modifier = modifier
+            modifier = modifier,
+            onAuto = onAuto
         )
     }
 }
@@ -371,7 +381,18 @@ fun ColorToolPanel(
     onResetGlobalSat: () -> Unit,
     onResetGlobalVib: () -> Unit,
     onResetAll: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    point: com.lumina.studio.core.edit.PointColorParams = params.pointColor,
+    pointEyedropperArmed: Boolean = false,
+    onPointEnabled: (Boolean) -> Unit = {},
+    onPointPickToggle: (Boolean) -> Unit = {},
+    onPointHue: (Float) -> Unit = {},
+    onPointRange: (Float) -> Unit = {},
+    onPointSat: (Float) -> Unit = {},
+    onPointLum: (Float) -> Unit = {},
+    onResetPoint: () -> Unit = {},
+    showPointAffected: Boolean = false,
+    onTogglePointAffected: (Boolean) -> Unit = {}
 ) {
     ColorPanel(
         params = params,
@@ -387,6 +408,46 @@ fun ColorToolPanel(
         onGlobalVib = onGlobalVib,
         onResetGlobalSat = onResetGlobalSat,
         onResetGlobalVib = onResetGlobalVib,
+        onResetAll = onResetAll,
+        modifier = modifier,
+        point = point,
+        pointEyedropperArmed = pointEyedropperArmed,
+        onPointEnabled = onPointEnabled,
+        onPointPickToggle = onPointPickToggle,
+        onPointHue = onPointHue,
+        onPointRange = onPointRange,
+        onPointSat = onPointSat,
+        onPointLum = onPointLum,
+        onResetPoint = onResetPoint,
+        showPointAffected = showPointAffected,
+        onTogglePointAffected = onTogglePointAffected
+    )
+}
+
+@Composable
+fun GradeToolPanel(
+    params: EditParams,
+    selected: GradeZone = GradeZone.GLOBAL,
+    onSelectZone: (GradeZone) -> Unit = {},
+    onBeginDrag: () -> Unit = {},
+    onLiveZone: (GradeZone, GradeAdjust) -> Unit = { _, _ -> },
+    onSetZone: (GradeZone, GradeAdjust) -> Unit = { _, _ -> },
+    onResetZone: (GradeZone) -> Unit = {},
+    onBlending: (Float) -> Unit = {},
+    onBalance: (Float) -> Unit = {},
+    onResetAll: () -> Unit = {},
+    modifier: Modifier = Modifier
+) {
+    GradePanel(
+        params = params,
+        selected = selected,
+        onSelectZone = onSelectZone,
+        onBeginDrag = onBeginDrag,
+        onLiveZone = onLiveZone,
+        onSetZone = onSetZone,
+        onResetZone = onResetZone,
+        onBlending = onBlending,
+        onBalance = onBalance,
         onResetAll = onResetAll,
         modifier = modifier
     )

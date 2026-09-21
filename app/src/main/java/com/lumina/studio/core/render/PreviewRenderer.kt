@@ -12,8 +12,11 @@ import com.lumina.studio.core.edit.CurveChannel
 import com.lumina.studio.core.edit.Curves
 import com.lumina.studio.core.edit.EditMask
 import com.lumina.studio.core.edit.EditParams
+import com.lumina.studio.core.edit.GradeHsl
+import com.lumina.studio.core.edit.GradeMath
 import com.lumina.studio.core.edit.HslColor
 import com.lumina.studio.core.edit.MaskTool
+import com.lumina.studio.core.edit.PointColorMath
 import com.lumina.studio.core.edit.StepKey
 import com.lumina.studio.core.lut.LutCube
 import com.lumina.studio.core.lut.LutRenderer
@@ -30,8 +33,9 @@ object PreviewRenderer {
     // NOT supported — see ColorMatrices). Grade math stays sRGB-math on both
     // qualities; FINAL differs only by intermediate store (RGBA_F16) so the
     // same recipe renders the same look with less quantization. Stage order
-    // LUT -> adjusts -> HSL -> curves -> details -> masks -> crop is identical
-    // for preview and export; Exporter.renderForExport funnels through
+    // LUT -> adjusts -> HSL -> curves -> pointColor -> grading -> details ->
+    // masks -> crop is identical for preview and export;
+    // Exporter.renderForExport funnels through
     // CpuRenderBackend with an Export target, which maps to FINAL.
     const val MAX_PREVIEW_DIM = 1600
     const val HISTOGRAM_BINS = 64
@@ -97,7 +101,8 @@ object PreviewRenderer {
     fun isIdentity(params: EditParams, hasLut: Boolean = false): Boolean =
         params.isDefault() && !hasLut
 
-    // Render order: LUT -> adjusts -> HSL -> curves -> details -> masks -> crop.
+    // Render order: LUT -> adjusts -> HSL -> curves -> pointColor -> grading ->
+    // details -> masks -> crop.
     // Export uses this same function via Exporter.renderForExport so preview matches export.
     // Perf budget: <100ms on <=1600px previews via early-outs per stage; per-pixel
     // HSL/curves passes run only when their groups are non-default. Tradeoff: HSL
@@ -114,6 +119,19 @@ object PreviewRenderer {
     // blend as out = base*(1-a) + graded*a. Crop runs last as a pure function.
     // Each stage is skipped when its group is default or its history step is
     // disabled, keeping the <100ms budget.
+    //
+    // M6 (§18 point color, §19 grading, §85 order):
+    // - Point color runs AFTER HSL+curves (it keys off the tone-mapped hue,
+    //   like the HSL stage, but targets one picked hue with its own falloff)
+    //   and BEFORE grading, so wheels grade the point-corrected pixels.
+    // - Grading runs AFTER curves (zone weights read tone-mapped luma) and
+    //   BEFORE details/masks. Both stages honor StepKey.COLOR and early-out
+    //   when default/disabled (point: disabled or no S/L adjust; grading:
+    //   all wheels neutral), preserving the <100ms budget.
+    // - Grade lift is gamma-domain sRGB math (display-referred, same choice
+    //   as exposure/contrast above); the pure weight/tint/falloff functions
+    //   live in core.edit.GradeMath/PointColorMath so JVM tests pin them
+    //   without Bitmaps — this file only loops pixels.
     //
     // M5 gamma/luminance audit (§86) — domain choice per operation. Nothing
     // below changes pixel math (zero-risk rule); entries marked M16 are known
@@ -186,6 +204,20 @@ object PreviewRenderer {
         }
         if (!params.isCurvesDefault() && steps.get(StepKey.CURVES)) {
             val out = applyCurves(current, params, quality)
+            if (out !== current) {
+                if (current !== src) current.recycle()
+                current = out
+            }
+        }
+        if (!params.isPointColorDefault() && steps.get(StepKey.COLOR)) {
+            val out = applyPointColor(current, params, quality)
+            if (out !== current) {
+                if (current !== src) current.recycle()
+                current = out
+            }
+        }
+        if (!params.isGradeDefault() && steps.get(StepKey.COLOR)) {
+            val out = applyGrading(current, params, quality)
             if (out !== current) {
                 if (current !== src) current.recycle()
                 current = out
@@ -348,6 +380,121 @@ object PreviewRenderer {
         val out = createWorkingBitmap(w, h, quality)
         out.setPixels(pixels, 0, w, 0, 0, w, h)
         return out
+    }
+
+    fun applyPointColor(
+        src: Bitmap,
+        params: EditParams,
+        quality: RenderQuality = RenderQuality.PREVIEW
+    ): Bitmap {
+        val point = params.pointColor
+        if (point.isDefault()) return src
+        val w = src.width
+        val h = src.height
+        if (w <= 0 || h <= 0) return src
+        val total = w * h
+        val pixels = IntArray(total)
+        src.getPixels(pixels, 0, w, 0, 0, w, h)
+        var touched = false
+        for (i in pixels.indices) {
+            val p = pixels[i]
+            val r0 = ((p shr 16) and 0xFF) / 255f
+            val g0 = ((p shr 8) and 0xFF) / 255f
+            val b0 = (p and 0xFF) / 255f
+            val out = PointColorMath.applyPoint(r0, g0, b0, point)
+            val r = (out[0] * 255f + 0.5f).toInt().coerceIn(0, 255)
+            val g = (out[1] * 255f + 0.5f).toInt().coerceIn(0, 255)
+            val b = (out[2] * 255f + 0.5f).toInt().coerceIn(0, 255)
+            if (r != ((p shr 16) and 0xFF) || g != ((p shr 8) and 0xFF) || b != (p and 0xFF)) {
+                touched = true
+                val a = p ushr 24
+                pixels[i] = (a shl 24) or (r shl 16) or (g shl 8) or b
+            }
+        }
+        if (!touched) return src
+        val out = createWorkingBitmap(w, h, quality)
+        out.setPixels(pixels, 0, w, 0, 0, w, h)
+        return out
+    }
+
+    fun applyGrading(
+        src: Bitmap,
+        params: EditParams,
+        quality: RenderQuality = RenderQuality.PREVIEW
+    ): Bitmap {
+        val grade = params.grade
+        if (grade.isDefault()) return src
+        val w = src.width
+        val h = src.height
+        if (w <= 0 || h <= 0) return src
+        val total = w * h
+        val pixels = IntArray(total)
+        src.getPixels(pixels, 0, w, 0, 0, w, h)
+        var touched = false
+        for (i in pixels.indices) {
+            val p = pixels[i]
+            val r0 = ((p shr 16) and 0xFF) / 255f
+            val g0 = ((p shr 8) and 0xFF) / 255f
+            val b0 = (p and 0xFF) / 255f
+            val out = GradeMath.applyGrade(r0, g0, b0, grade)
+            val r = (out[0] * 255f + 0.5f).toInt().coerceIn(0, 255)
+            val g = (out[1] * 255f + 0.5f).toInt().coerceIn(0, 255)
+            val b = (out[2] * 255f + 0.5f).toInt().coerceIn(0, 255)
+            if (r != ((p shr 16) and 0xFF) || g != ((p shr 8) and 0xFF) || b != (p and 0xFF)) {
+                touched = true
+                val a = p ushr 24
+                pixels[i] = (a shl 24) or (r shl 16) or (g shl 8) or b
+            }
+        }
+        if (!touched) return src
+        val out = createWorkingBitmap(w, h, quality)
+        out.setPixels(pixels, 0, w, 0, 0, w, h)
+        return out
+    }
+
+    /**
+     * M6 point-color affected-area overlay (§18, cheap approx). Downscales to
+     * [maxDim] and paints a red tint with alpha = hue-falloff weight, so the
+     * editor can show which pixels the current hue/range selects. Transparent
+     * where unselected. Returns null when point color is default. The caller
+     * owns the returned bitmap (overlay display recycles on replace).
+     */
+    fun buildPointColorMask(
+        src: Bitmap,
+        params: EditParams,
+        maxDim: Int = 192
+    ): Bitmap? {
+        val point = params.pointColor
+        if (point.isDefault()) return null
+        val w = src.width
+        val h = src.height
+        if (w <= 0 || h <= 0) return null
+        return try {
+            val longest = maxOf(w, h)
+            val scale = if (longest <= maxDim) 1f else maxDim.toFloat() / longest.toFloat()
+            val sw = (w * scale + 0.5f).toInt().coerceIn(1, w)
+            val sh = (h * scale + 0.5f).toInt().coerceIn(1, h)
+            val small = Bitmap.createScaledBitmap(src, sw, sh, true)
+            val total = sw * sh
+            val pixels = IntArray(total)
+            small.getPixels(pixels, 0, sw, 0, 0, sw, sh)
+            if (!small.isRecycled) small.recycle()
+            for (i in pixels.indices) {
+                val p = pixels[i]
+                val r0 = ((p shr 16) and 0xFF) / 255f
+                val g0 = ((p shr 8) and 0xFF) / 255f
+                val b0 = (p and 0xFF) / 255f
+                val hue = GradeHsl.rgbToHsl(r0, g0, b0)[0]
+                val weight = PointColorMath.falloffWeight(hue, point.hueCenter, point.hueRange)
+                val alpha = (weight * 160f + 0.5f).toInt().coerceIn(0, 160)
+                pixels[i] = (alpha shl 24) or (0xFF shl 16) or (0x40 shl 8) or 0x40
+            }
+            val out = Bitmap.createBitmap(sw, sh, Bitmap.Config.ARGB_8888)
+            out.setPixels(pixels, 0, sw, 0, 0, sw, sh)
+            out
+        } catch (_: Exception) {
+            null
+        }
     }
 
     fun applyDetails(

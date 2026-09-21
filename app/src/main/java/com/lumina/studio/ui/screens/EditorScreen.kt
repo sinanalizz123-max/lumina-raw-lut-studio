@@ -38,6 +38,7 @@ import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.Brush
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ColorLens
 import androidx.compose.material.icons.filled.Crop
 import androidx.compose.material.icons.filled.Grain
 import androidx.compose.material.icons.filled.History
@@ -119,6 +120,7 @@ import com.lumina.studio.ui.editor.CurvesToolPanel
 import com.lumina.studio.ui.editor.DetailsToolPanel
 import com.lumina.studio.ui.editor.EditorTool
 import com.lumina.studio.ui.editor.EditorToolPanel
+import com.lumina.studio.ui.editor.GradeToolPanel
 import com.lumina.studio.ui.editor.MaskToolPanel
 import java.io.File
 import java.text.SimpleDateFormat
@@ -154,6 +156,10 @@ fun EditorScreen(navController: NavController, projectId: String? = null) {
     val activeTool by vm.activeTool.collectAsState()
     val selectedHsl by vm.selectedHsl.collectAsState()
     val eyedropperArmed by vm.eyedropperArmed.collectAsState()
+    val selectedGradeZone by vm.selectedGradeZone.collectAsState()
+    val pointEyedropperArmed by vm.pointEyedropperArmed.collectAsState()
+    val showPointAffected by vm.showPointAffected.collectAsState()
+    val pointColorMask by vm.pointColorMask.collectAsState()
     val selectedCurve by vm.selectedCurve.collectAsState()
     val selectedMaskId by vm.selectedMaskId.collectAsState()
     val showMaskOverlay by vm.showMaskOverlay.collectAsState()
@@ -520,8 +526,8 @@ fun EditorScreen(navController: NavController, projectId: String? = null) {
                             translationX = offset.x
                             translationY = offset.y
                         }
-                        .transformable(transformState, enabled = !eyedropperArmed)
-                        .pointerInput(eyedropperArmed, displayBitmap, viewportSize) {
+                        .transformable(transformState, enabled = !eyedropperArmed && !pointEyedropperArmed)
+                        .pointerInput(eyedropperArmed, pointEyedropperArmed, displayBitmap, viewportSize) {
                             detectTapGestures(
                                 onDoubleTap = {
                                     vm.toggleFullscreen()
@@ -544,6 +550,32 @@ fun EditorScreen(navController: NavController, projectId: String? = null) {
                                     }
                                 },
                                 onTap = { tap ->
+                                    if (pointEyedropperArmed) {
+                                        val bmp = displayBitmap ?: return@detectTapGestures
+                                        val vw = viewportSize.width.toFloat()
+                                        val vh = viewportSize.height.toFloat()
+                                        if (vw <= 0f || vh <= 0f) return@detectTapGestures
+                                        val bw = bmp.width.toFloat()
+                                        val bh = bmp.height.toFloat()
+                                        if (bw <= 0f || bh <= 0f) return@detectTapGestures
+                                        val fitScale = minOf(vw / bw, vh / bh)
+                                        if (fitScale <= 0f) return@detectTapGestures
+                                        val drawnW = bw * fitScale
+                                        val drawnH = bh * fitScale
+                                        val left = (vw - drawnW) / 2f
+                                        val top = (vh - drawnH) / 2f
+                                        val x = tap.x
+                                        val y = tap.y
+                                        if (x < left || x > left + drawnW || y < top || y > top + drawnH) return@detectTapGestures
+                                        val bx = ((x - left) / fitScale).toInt().coerceIn(0, bmp.width - 1)
+                                        val by = ((y - top) / fitScale).toInt().coerceIn(0, bmp.height - 1)
+                                        try {
+                                            if (bmp.isRecycled) return@detectTapGestures
+                                            vm.pointEyedropperPick(bmp.getPixel(bx, by))
+                                        } catch (_: Exception) {
+                                        }
+                                        return@detectTapGestures
+                                    }
                                     if (!eyedropperArmed) {
                                         if (!showImageDetails && System.currentTimeMillis() - imagePressStartMs < HOLD_COMPARE_MS) {
                                             typeBadgeVisible = !typeBadgeVisible
@@ -670,6 +702,23 @@ fun EditorScreen(navController: NavController, projectId: String? = null) {
                                 masks = params.masks,
                                 modifier = Modifier.fillMaxSize()
                             )
+                        }
+                    }
+                    if (!effectiveOriginal && showPointAffected) {
+                        val pcm = pointColorMask
+                        if (pcm != null) {
+                            try {
+                                if (!pcm.isRecycled) {
+                                    Image(
+                                        bitmap = pcm.asImageBitmap(),
+                                        contentDescription = null,
+                                        modifier = Modifier.fillMaxSize(),
+                                        contentScale = ContentScale.Fit,
+                                        alpha = 0.6f
+                                    )
+                                }
+                            } catch (_: Exception) {
+                            }
                         }
                     }
                 }
@@ -972,7 +1021,8 @@ fun EditorScreen(navController: NavController, projectId: String? = null) {
                             tool = EditorTool.ADJUST,
                             params = params,
                             onControl = { control, value -> vm.updateControl(control, value) },
-                            onResetControl = { vm.resetControl(it) }
+                            onResetControl = { vm.resetControl(it) },
+                            onAuto = { vm.autoLight() }
                         )
                         Row(
                             modifier = Modifier
@@ -1012,7 +1062,31 @@ fun EditorScreen(navController: NavController, projectId: String? = null) {
                             onGlobalVib = { vm.updateGlobalVib(it) },
                             onResetGlobalSat = { vm.updateGlobalSat(0f) },
                             onResetGlobalVib = { vm.updateGlobalVib(0f) },
-                            onResetAll = { vm.resetHslAll() }
+                            onResetAll = { vm.resetHslAll() },
+                            point = params.pointColor,
+                            pointEyedropperArmed = pointEyedropperArmed,
+                            onPointEnabled = { vm.setPointEnabled(it) },
+                            onPointPickToggle = { vm.setPointEyedropperArmed(it) },
+                            onPointHue = { vm.updatePointHueCenter(it) },
+                            onPointRange = { vm.updatePointHueRange(it) },
+                            onPointSat = { vm.updatePointSat(it) },
+                            onPointLum = { vm.updatePointLum(it) },
+                            onResetPoint = { vm.resetPointColor() },
+                            showPointAffected = showPointAffected,
+                            onTogglePointAffected = { vm.setShowPointAffected(it) }
+                        )
+                    } else if (tool == EditorTool.GRADE) {
+                        GradeToolPanel(
+                            params = params,
+                            selected = selectedGradeZone,
+                            onSelectZone = { vm.selectGradeZone(it) },
+                            onBeginDrag = { vm.beginGradeEdit() },
+                            onLiveZone = { zone, adj -> vm.moveGradeZoneLive(zone, adj) },
+                            onSetZone = { zone, adj -> vm.updateGradeZone(zone, adj) },
+                            onResetZone = { vm.resetGradeZone(it) },
+                            onBlending = { vm.updateGradeBlending(it) },
+                            onBalance = { vm.updateGradeBalance(it) },
+                            onResetAll = { vm.resetGradeAll() }
                         )
                     } else if (tool == EditorTool.CURVES) {
                         CurvesToolPanel(
@@ -1205,6 +1279,7 @@ private fun editorToolIcon(tool: com.lumina.studio.ui.editor.EditorTool): androi
         com.lumina.studio.ui.editor.EditorTool.PRESETS -> Icons.Filled.AutoAwesome
         com.lumina.studio.ui.editor.EditorTool.ADJUST -> Icons.Filled.Tune
         com.lumina.studio.ui.editor.EditorTool.COLOR -> Icons.Filled.Palette
+        com.lumina.studio.ui.editor.EditorTool.GRADE -> Icons.Filled.ColorLens
         com.lumina.studio.ui.editor.EditorTool.CURVES -> Icons.Filled.ShowChart
         com.lumina.studio.ui.editor.EditorTool.DETAILS -> Icons.Filled.Grain
         com.lumina.studio.ui.editor.EditorTool.CROP -> Icons.Filled.Crop

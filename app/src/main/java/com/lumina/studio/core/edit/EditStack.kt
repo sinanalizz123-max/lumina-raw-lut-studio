@@ -77,6 +77,172 @@ data class HslAdjust(
     val lum: Float = 0f
 )
 
+/**
+ * M6 color grading model (§19). Four wheels — Global + Shadows + Midtones +
+ * Highlights — each {hue 0..360, sat 0..100, lum -100..100} plus overall
+ * [blending] strength 0..100 (default 50) and [balance] -100..100 (default 0,
+ * shifts the shadow/highlight boundary; positive favors shadows).
+ *
+ * Render position (§85): AFTER curves (zone weights read tone-mapped luma),
+ * BEFORE details/masks. Honors StepKey.COLOR. Pure weight/tint math lives in
+ * [GradeMath] (android-free, JVM-tested); PreviewRenderer only loops pixels.
+ */
+enum class GradeZone(val key: String, val label: String) {
+    GLOBAL("global", "Global"),
+    SHADOWS("shadows", "Shadows"),
+    MIDTONES("midtones", "Midtones"),
+    HIGHLIGHTS("highlights", "Highlights");
+
+    companion object {
+        fun fromKey(key: String?): GradeZone? = entries.firstOrNull { it.key == key }
+    }
+}
+
+data class GradeAdjust(
+    val hue: Float = 0f,
+    val sat: Float = 0f,
+    val lum: Float = 0f
+) {
+    companion object {
+        fun wrapHue(value: Float): Float {
+            var c = value % 360f
+            if (c < 0f) c += 360f
+            if (c >= 360f) c -= 360f
+            return c
+        }
+    }
+}
+
+data class GradeParams(
+    val global: GradeAdjust = GradeAdjust(),
+    val shadows: GradeAdjust = GradeAdjust(),
+    val midtones: GradeAdjust = GradeAdjust(),
+    val highlights: GradeAdjust = GradeAdjust(),
+    val blending: Float = DEFAULT_BLENDING,
+    val balance: Float = 0f
+) {
+    fun get(zone: GradeZone): GradeAdjust = when (zone) {
+        GradeZone.GLOBAL -> global
+        GradeZone.SHADOWS -> shadows
+        GradeZone.MIDTONES -> midtones
+        GradeZone.HIGHLIGHTS -> highlights
+    }
+
+    fun with(zone: GradeZone, adjust: GradeAdjust): GradeParams {
+        val clamped = GradeAdjust(
+            hue = GradeAdjust.wrapHue(adjust.hue),
+            sat = adjust.sat.coerceIn(0f, 100f),
+            lum = adjust.lum.coerceIn(-100f, 100f)
+        )
+        if (get(zone) == clamped) return this
+        return when (zone) {
+            GradeZone.GLOBAL -> copy(global = clamped)
+            GradeZone.SHADOWS -> copy(shadows = clamped)
+            GradeZone.MIDTONES -> copy(midtones = clamped)
+            GradeZone.HIGHLIGHTS -> copy(highlights = clamped)
+        }
+    }
+
+    fun withHue(zone: GradeZone, value: Float): GradeParams =
+        with(zone, get(zone).copy(hue = GradeAdjust.wrapHue(value)))
+
+    fun withSat(zone: GradeZone, value: Float): GradeParams =
+        with(zone, get(zone).copy(sat = value.coerceIn(0f, 100f)))
+
+    fun withLum(zone: GradeZone, value: Float): GradeParams =
+        with(zone, get(zone).copy(lum = value.coerceIn(-100f, 100f)))
+
+    fun resetZone(zone: GradeZone): GradeParams {
+        if (get(zone) == GradeAdjust()) return this
+        return with(zone, GradeAdjust())
+    }
+
+    fun withBlending(value: Float): GradeParams {
+        val v = value.coerceIn(0f, 100f)
+        return if (blending == v) this else copy(blending = v)
+    }
+
+    fun withBalance(value: Float): GradeParams {
+        val v = value.coerceIn(-100f, 100f)
+        return if (balance == v) this else copy(balance = v)
+    }
+
+    fun resetAll(): GradeParams {
+        if (isDefault()) return this
+        return GradeParams()
+    }
+
+    fun isDefault(): Boolean =
+        global == GradeAdjust() && shadows == GradeAdjust() &&
+            midtones == GradeAdjust() && highlights == GradeAdjust() &&
+            blending == DEFAULT_BLENDING && balance == 0f
+
+    companion object {
+        const val DEFAULT_BLENDING = 50f
+    }
+}
+
+/**
+ * M6 point color model (§18). Selective S/L tweak around a picked hue:
+ * [enabled] gate, [sampledRgb] ARGB from the eyedropper tap, [hueCenter]
+ * 0..360 (seeded from the sample, fine-tunable), [hueRange] 10..180 falloff
+ * half-width, [satAdjust]/[lumAdjust] -100..100.
+ *
+ * Render position: AFTER HSL/curves (operates on tone-mapped pixels, still
+ * keyed to the pre-grade hue), BEFORE grading. Non-destructive: lives in the
+ * recipe + JSON. Early-out when [isDefault] (disabled, or enabled with no
+ * S/L adjust). Pure falloff math in [PointColorMath].
+ */
+data class PointColorParams(
+    val enabled: Boolean = false,
+    val sampledRgb: Int? = null,
+    val hueCenter: Float = 0f,
+    val hueRange: Float = DEFAULT_RANGE,
+    val satAdjust: Float = 0f,
+    val lumAdjust: Float = 0f
+) {
+    fun withEnabled(value: Boolean): PointColorParams =
+        if (enabled == value) this else copy(enabled = value)
+
+    fun withSample(argb: Int, hueDeg: Float): PointColorParams {
+        val next = copy(enabled = true, sampledRgb = argb, hueCenter = GradeAdjust.wrapHue(hueDeg))
+        return if (next == this) this else next
+    }
+
+    fun withHueCenter(value: Float): PointColorParams {
+        val v = GradeAdjust.wrapHue(value)
+        return if (hueCenter == v) this else copy(hueCenter = v)
+    }
+
+    fun withHueRange(value: Float): PointColorParams {
+        val v = value.coerceIn(MIN_RANGE, MAX_RANGE)
+        return if (hueRange == v) this else copy(hueRange = v)
+    }
+
+    fun withSat(value: Float): PointColorParams {
+        val v = value.coerceIn(-100f, 100f)
+        return if (satAdjust == v) this else copy(satAdjust = v)
+    }
+
+    fun withLum(value: Float): PointColorParams {
+        val v = value.coerceIn(-100f, 100f)
+        return if (lumAdjust == v) this else copy(lumAdjust = v)
+    }
+
+    fun reset(): PointColorParams {
+        if (this == PointColorParams()) return this
+        return PointColorParams()
+    }
+
+    fun isDefault(): Boolean = !enabled || (satAdjust == 0f && lumAdjust == 0f)
+
+    companion object {
+        const val MIN_RANGE = 10f
+        const val MAX_RANGE = 180f
+        const val DEFAULT_RANGE = 60f
+    }
+}
+
 enum class CurveChannel(val key: String, val label: String) {
     MASTER("master", "Master"),
     RED("red", "R"),
@@ -486,6 +652,8 @@ data class EditParams(
     val nrColor: Float = 25f,
     val crop: CropParams = CropParams(),
     val masks: List<EditMask> = emptyList(),
+    val grade: GradeParams = GradeParams(),
+    val pointColor: PointColorParams = PointColorParams(),
     val steps: StepsEnabled = StepsEnabled()
 ) {
     fun get(control: AdjustControl): Float = when (control) {
@@ -550,7 +718,8 @@ data class EditParams(
 
     fun isDefault(): Boolean =
         isAdjustsDefault() && isHslDefault() && isCurvesDefault() &&
-            isDetailsDefault() && isCropDefault() && isMasksDefault()
+            isDetailsDefault() && isCropDefault() && isMasksDefault() &&
+            isGradeDefault() && isPointColorDefault()
 
     fun toMap(): Map<String, Float> = AdjustControl.entries.associate { it.key to get(it) }
 
@@ -600,6 +769,81 @@ data class EditParams(
 
     fun hasPerColorHsl(): Boolean =
         HslColor.entries.any { (hsl[it] ?: HslAdjust()) != HslAdjust() }
+
+    fun getGrade(zone: GradeZone): GradeAdjust = grade.get(zone)
+
+    fun withGrade(zone: GradeZone, adjust: GradeAdjust): EditParams {
+        val next = grade.with(zone, adjust)
+        return if (next == grade) this else copy(grade = next)
+    }
+
+    fun withGradeHue(zone: GradeZone, value: Float): EditParams =
+        withGrade(zone, getGrade(zone).copy(hue = GradeAdjust.wrapHue(value)))
+
+    fun withGradeSat(zone: GradeZone, value: Float): EditParams =
+        withGrade(zone, getGrade(zone).copy(sat = value.coerceIn(0f, 100f)))
+
+    fun withGradeLum(zone: GradeZone, value: Float): EditParams =
+        withGrade(zone, getGrade(zone).copy(lum = value.coerceIn(-100f, 100f)))
+
+    fun resetGradeZone(zone: GradeZone): EditParams {
+        val next = grade.resetZone(zone)
+        return if (next == grade) this else copy(grade = next)
+    }
+
+    fun withGradeBlending(value: Float): EditParams {
+        val next = grade.withBlending(value)
+        return if (next == grade) this else copy(grade = next)
+    }
+
+    fun withGradeBalance(value: Float): EditParams {
+        val next = grade.withBalance(value)
+        return if (next == grade) this else copy(grade = next)
+    }
+
+    fun resetGradeAll(): EditParams {
+        if (grade.isDefault()) return this
+        return copy(grade = GradeParams())
+    }
+
+    fun isGradeDefault(): Boolean = grade.isDefault()
+
+    fun withPointEnabled(enabled: Boolean): EditParams {
+        val next = pointColor.withEnabled(enabled)
+        return if (next == pointColor) this else copy(pointColor = next)
+    }
+
+    fun withPointSample(argb: Int, hueDeg: Float): EditParams {
+        val next = pointColor.withSample(argb, hueDeg)
+        return if (next == pointColor) this else copy(pointColor = next)
+    }
+
+    fun withPointHueCenter(value: Float): EditParams {
+        val next = pointColor.withHueCenter(value)
+        return if (next == pointColor) this else copy(pointColor = next)
+    }
+
+    fun withPointHueRange(value: Float): EditParams {
+        val next = pointColor.withHueRange(value)
+        return if (next == pointColor) this else copy(pointColor = next)
+    }
+
+    fun withPointSat(value: Float): EditParams {
+        val next = pointColor.withSat(value)
+        return if (next == pointColor) this else copy(pointColor = next)
+    }
+
+    fun withPointLum(value: Float): EditParams {
+        val next = pointColor.withLum(value)
+        return if (next == pointColor) this else copy(pointColor = next)
+    }
+
+    fun resetPointColor(): EditParams {
+        if (pointColor == PointColorParams()) return this
+        return copy(pointColor = PointColorParams())
+    }
+
+    fun isPointColorDefault(): Boolean = pointColor.isDefault()
 
     fun getCurve(channel: CurveChannel): List<CurvePoint> =
         curves[channel] ?: Curves.DEFAULT_POINTS
@@ -826,6 +1070,23 @@ object EditParamsJson {
             sb.append(",\"step_").append(key.key).append("\":")
                 .append(if (params.steps.get(key)) "true" else "false")
         }
+        for (zone in GradeZone.entries) {
+            val g = params.getGrade(zone)
+            sb.append(",\"grade_").append(zone.key).append("_h\":").append(g.hue)
+            sb.append(",\"grade_").append(zone.key).append("_s\":").append(g.sat)
+            sb.append(",\"grade_").append(zone.key).append("_l\":").append(g.lum)
+        }
+        sb.append(",\"grade_blending\":").append(params.grade.blending)
+        sb.append(",\"grade_balance\":").append(params.grade.balance)
+        sb.append(",\"point_enabled\":").append(if (params.pointColor.enabled) "true" else "false")
+        sb.append(",\"point_rgb\":")
+        val sampled = params.pointColor.sampledRgb
+        if (sampled == null) sb.append("null")
+        else sb.append("\"#").append(String.format("%08X", sampled)).append("\"")
+        sb.append(",\"point_hue\":").append(params.pointColor.hueCenter)
+        sb.append(",\"point_range\":").append(params.pointColor.hueRange)
+        sb.append(",\"point_sat\":").append(params.pointColor.satAdjust)
+        sb.append(",\"point_lum\":").append(params.pointColor.lumAdjust)
         sb.append(",\"masks\":[")
         params.masks.forEachIndexed { index, mask ->
             if (index > 0) sb.append(",")
@@ -939,6 +1200,53 @@ object EditParamsJson {
                 }
             }
             if (stepsTouched) params = params.copy(steps = steps)
+            var grade = params.grade
+            var gradeTouched = false
+            for (zone in GradeZone.entries) {
+                val h = extractNumber(json, "grade_${zone.key}_h")
+                val s = extractNumber(json, "grade_${zone.key}_s")
+                val l = extractNumber(json, "grade_${zone.key}_l")
+                if (h != null || s != null || l != null) {
+                    val base = grade.get(zone)
+                    grade = grade.with(
+                        zone,
+                        GradeAdjust(
+                            hue = h ?: base.hue,
+                            sat = s ?: base.sat,
+                            lum = l ?: base.lum
+                        )
+                    )
+                    gradeTouched = true
+                }
+            }
+            extractNumber(json, "grade_blending")?.let {
+                grade = grade.withBlending(it)
+                gradeTouched = true
+            }
+            extractNumber(json, "grade_balance")?.let {
+                grade = grade.withBalance(it)
+                gradeTouched = true
+            }
+            if (gradeTouched) params = params.copy(grade = grade)
+            // Missing point_* keys (pre-M6 JSON) fall back to disabled defaults.
+            val pointEnabled = extractBoolean(json, "point_enabled")
+            val pointRgbRaw = extractStringOrNull(json, "point_rgb")
+            val pointHue = extractNumber(json, "point_hue")
+            val pointRange = extractNumber(json, "point_range")
+            val pointSat = extractNumber(json, "point_sat")
+            val pointLum = extractNumber(json, "point_lum")
+            if (pointEnabled != null || pointRgbRaw != null || pointHue != null ||
+                pointRange != null || pointSat != null || pointLum != null
+            ) {
+                var pc = params.pointColor
+                pointRgbRaw?.let { parseHexArgb(it)?.let { argb -> pc = pc.copy(sampledRgb = argb) } }
+                pointEnabled?.let { pc = pc.withEnabled(it) }
+                pointHue?.let { pc = pc.withHueCenter(it) }
+                pointRange?.let { pc = pc.withHueRange(it) }
+                pointSat?.let { pc = pc.withSat(it) }
+                pointLum?.let { pc = pc.withLum(it) }
+                params = params.copy(pointColor = pc)
+            }
             extractMasks(json)?.let { params = params.copy(masks = it) }
             params
         } catch (_: Exception) {
@@ -1094,6 +1402,19 @@ object EditParamsJson {
         val regex = Regex("\"" + Regex.escape(key) + "\"\\s*:\\s*(true|false)")
         val raw = regex.find(json)?.groupValues?.get(1) ?: return null
         return raw == "true"
+    }
+
+    private fun parseHexArgb(raw: String): Int? {
+        val s = raw.trim().removePrefix("#")
+        return try {
+            when (s.length) {
+                6 -> (0xFF000000.toInt() or s.toLong(16).toInt())
+                8 -> s.toLong(16).toInt()
+                else -> null
+            }
+        } catch (_: Exception) {
+            null
+        }
     }
 
     private fun extractCurvePoints(json: String, key: String): List<CurvePoint>? {
