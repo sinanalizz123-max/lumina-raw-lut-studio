@@ -6,6 +6,7 @@ import com.lumina.studio.core.render.PreviewRenderer
 import com.lumina.studio.core.render.RenderBackend
 import com.lumina.studio.core.render.RenderRequest
 import com.lumina.studio.core.render.RenderResult
+import com.lumina.studio.core.render.qualityForTarget
 import java.util.Collections
 
 class CpuRenderBackend : RenderBackend<Bitmap> {
@@ -26,7 +27,12 @@ class CpuRenderBackend : RenderBackend<Bitmap> {
         if (w <= 0 || h <= 0) return RenderResult.Unavailable("empty source")
         if (MemoryBudget.exceeds(w, h)) return RenderResult.Unavailable("too large")
         return try {
-            RenderResult.Ok(PreviewRenderer.render(src, request.params, request.lut))
+            // M5: explicit request quality wins; otherwise the target decides
+            // (Preview/Thumb -> PREVIEW sRGB-math/8888, Fullscreen/Tile/Export
+            // -> FINAL sRGB-math/F16 intermediates). Export therefore always
+            // takes the high-precision path via CpuExportRenderer.
+            val quality = request.quality ?: qualityForTarget(request.target)
+            RenderResult.Ok(PreviewRenderer.render(src, request.params, request.lut, quality))
         } catch (_: OutOfMemoryError) {
             RenderResult.OomBudget
         } catch (e: Exception) {

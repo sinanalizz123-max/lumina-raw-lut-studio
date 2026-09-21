@@ -151,12 +151,10 @@ fun ExportScreen(navController: NavController, projectId: String? = null) {
     LaunchedEffect(Unit) {
         try {
             val stored = settingsRepository.exportColorSpace.first()
-            val mapped = ExportColorSpace.fromKey(stored)
-            val coerced = if (mapped == ExportColorSpace.DISPLAY_P3 && !Exporter.isWideGamutDisplay(context)) {
-                ExportColorSpace.SRGB
-            } else {
-                mapped
-            }
+            val coerced = ExportColorSpace.coerceForDisplay(
+                ExportColorSpace.fromKey(stored),
+                Exporter.isWideGamutDisplay(context)
+            )
             val includeLocation = try {
                 settingsRepository.exportIncludeLocation.first()
             } catch (_: Exception) {
@@ -624,7 +622,7 @@ fun ExportScreen(navController: NavController, projectId: String? = null) {
                                 }
                             )
                             ResolutionRow(
-                                label = "Display P3 (device-supported output container)",
+                                label = ExportColorSpace.DISPLAY_P3.label,
                                 selected = settings.colorSpace == ExportColorSpace.DISPLAY_P3,
                                 onClick = {
                                     settings = settings.copy(colorSpace = ExportColorSpace.DISPLAY_P3)
@@ -639,7 +637,7 @@ fun ExportScreen(navController: NavController, projectId: String? = null) {
                             )
                         }
                         Text(
-                            "Render math stays sRGB for correctness; P3 is the output container only.",
+                            "Render math stays sRGB for correctness; P3 converts the pixels on export.",
                             style = LuminaCaptionTextStyle,
                             color = LuminaMuted
                         )

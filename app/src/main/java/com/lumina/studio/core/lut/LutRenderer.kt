@@ -17,7 +17,16 @@ object LutRenderer {
     @Volatile
     private var cachedEffectiveResult: LutCube? = null
 
-    fun applyLut(src: Bitmap, lut: LutCube, intensity: Float): Bitmap {
+    // M5: [outConfig] selects the intermediate precision. PREVIEW callers use
+    // ARGB_8888 (default, golden behavior); FINAL callers pass RGBA_F16 so the
+    // trilinear float output lands in a half-float store instead of rounding
+    // to 8-bit between stages. Pixel math is identical either way.
+    fun applyLut(
+        src: Bitmap,
+        lut: LutCube,
+        intensity: Float,
+        outConfig: Bitmap.Config = Bitmap.Config.ARGB_8888
+    ): Bitmap {
         val t = intensity.coerceIn(0f, 1f)
         if (t <= 0f) return src
         if (src.width <= 0 || src.height <= 0) return src
@@ -51,7 +60,11 @@ object LutRenderer {
                 ((fg * 255f + 0.5f).toInt().coerceIn(0, 255) shl 8) or
                 (fb * 255f + 0.5f).toInt().coerceIn(0, 255)
         }
-        val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val out = try {
+            Bitmap.createBitmap(w, h, outConfig)
+        } catch (_: Exception) {
+            Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        }
         out.setPixels(pixels, 0, w, 0, 0, w, h)
         return out
     }

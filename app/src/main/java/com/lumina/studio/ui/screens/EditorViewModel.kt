@@ -155,6 +155,7 @@ class EditorViewModel(application: Application, private val projectId: String?) 
     private var persistJob: Job? = null
     private val pendingHistoryTags = LinkedHashSet<String>()
     private var renderJob: Job? = null
+    private var histogramJob: Job? = null
     private var loadJob: Job? = null
     private var fullscreenJob: Job? = null
     private var tileJob: Job? = null
@@ -935,8 +936,14 @@ class EditorViewModel(application: Application, private val projectId: String?) 
             // Phase 4B: histogram auto-recompute on every render runs only with GPU
             // acceleration ON. When OFF, the histogram updates solely via explicit
             // requestHistogram()/toggleHistogram() calls.
+            // M5 (§51): the histogram reads the RENDERED preview bitmap
+            // (post-pipeline) via computeHistogram, never the source — except
+            // when the render itself failed and only base exists. Auto updates
+            // are debounced (scheduleHistogram) so slider ticks never recompute
+            // per tick; explicit requests stay immediate.
             if (_showHistogram.value && PreviewRenderer.shouldAutoHistogram(gpuEnabled)) {
-                if (out != null) computeHistogram(out) else computeHistogram(base)
+                val graded = out ?: base
+                if (graded != null) scheduleHistogram(graded)
             }
         }
         if (_fullscreen.value) scheduleFullscreenRender(immediate = false)
@@ -1355,6 +1362,11 @@ class EditorViewModel(application: Application, private val projectId: String?) 
     override fun onCleared() {
         super.onCleared()
         try {
+            histogramJob?.cancel()
+        } catch (_: Exception) {
+        }
+        histogramJob = null
+        try {
             fullscreenJob?.cancel()
         } catch (_: Exception) {
         }
@@ -1386,6 +1398,20 @@ class EditorViewModel(application: Application, private val projectId: String?) 
         }
     }
 
+    // M5: debounced auto-histogram for the render path. Superseded ticks are
+    // dropped via histogramJob cancel so rapid slider movement recomputes at
+    // most once per HISTOGRAM_DEBOUNCE_MS from the latest rendered frame.
+    private fun scheduleHistogram(source: Bitmap) {
+        histogramJob?.cancel()
+        histogramJob = viewModelScope.launch(Dispatchers.Default) {
+            try {
+                delay(HISTOGRAM_DEBOUNCE_MS)
+                _histogram.value = PreviewRenderer.computeHistogram(source)
+            } catch (_: Exception) {
+            }
+        }
+    }
+
     private fun schedulePersist(historyTag: String? = EditHistoryLog.EDIT) {
         if (historyTag != null) pendingHistoryTags.add(historyTag)
         persistJob?.cancel()
@@ -1412,6 +1438,7 @@ class EditorViewModel(application: Application, private val projectId: String?) 
         const val TAG_ZOOM_TILE = "EditorZoomTile"
         const val MAX_STACK = 50
         const val PERSIST_DEBOUNCE_MS = 300L
+        const val HISTOGRAM_DEBOUNCE_MS = 150L
         const val FULLSCREEN_MAX_DIM = 4096
         const val FULLSCREEN_DEBOUNCE_MS = 500L
         const val ZOOM_TILE_THRESHOLD = 1.25f

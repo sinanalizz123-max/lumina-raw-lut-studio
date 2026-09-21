@@ -3,8 +3,6 @@ package com.lumina.studio.core.export
 import android.content.ContentValues
 import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.Canvas
-import android.graphics.ColorSpace
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
@@ -35,7 +33,7 @@ enum class ExportFormat(val mime: String, val extension: String) {
 
 enum class ExportColorSpace(val label: String, val key: String) {
     SRGB("sRGB", "sRGB"),
-    DISPLAY_P3("Display P3 (device-supported output container)", "Display P3");
+    DISPLAY_P3("Display P3 (converted output, device-supported)", "Display P3");
 
     companion object {
         fun fromKey(key: String?): ExportColorSpace {
@@ -44,6 +42,17 @@ enum class ExportColorSpace(val label: String, val key: String) {
             return if (normalized == "display p3" || normalized == "display_p3" || normalized == "p3") DISPLAY_P3
             else SRGB
         }
+
+        // M5: pure no-P3-on-unsupported gate (no android.*, JVM-pinned).
+        // Display P3 is offered only when the device reports a wide-gamut
+        // display; anything else (garbage keys via fromKey, unsupported
+        // displays) coerces to sRGB so exports never claim P3 they cannot
+        // show. Callers must use this instead of inlining the check.
+        fun coerceForDisplay(
+            requested: ExportColorSpace,
+            wideGamutSupported: Boolean
+        ): ExportColorSpace =
+            if (requested == DISPLAY_P3 && !wideGamutSupported) SRGB else requested
     }
 }
 
@@ -175,15 +184,21 @@ object Exporter {
         configWide || displayWide
     }.getOrDefault(false)
 
-    // The render pipeline stays sRGB-math for correctness; Display P3 is only
-    // the output Bitmap container, requested when the device reports support.
+    // M5 real P3 output (§14): the render pipeline stays sRGB-math for
+    // correctness, and Display P3 now means CONVERTED pixels (linearize sRGB
+    // -> XYZ -> P3 D65 -> re-encode, via CpuColorManager.convertP3) in a
+    // P3-tagged container — not a relabeled sRGB buffer. sRGB returns the
+    // input untouched. Preview P3, when required, must go through this same
+    // function (never tag without converting); editor previews otherwise stay
+    // sRGB working-space and the system compositor handles P3 displays.
     fun withColorSpace(bitmap: Bitmap, colorSpace: ExportColorSpace): Bitmap {
         if (colorSpace != ExportColorSpace.DISPLAY_P3) return bitmap
         return try {
-            val p3 = ColorSpace.get(ColorSpace.Named.DISPLAY_P3)
-            val out = Bitmap.createBitmap(bitmap.width, bitmap.height, Bitmap.Config.ARGB_8888, true, p3)
-            Canvas(out).drawBitmap(bitmap, 0f, 0f, null)
-            out
+            RenderBackends.colors().convert(
+                bitmap,
+                com.lumina.studio.core.render.RenderColorSpace.SRGB,
+                com.lumina.studio.core.render.RenderColorSpace.DISPLAY_P3
+            )
         } catch (_: Exception) {
             bitmap
         }

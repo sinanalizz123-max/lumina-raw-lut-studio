@@ -2,6 +2,31 @@ package com.lumina.studio.core.render
 
 import kotlin.math.pow
 
+/**
+ * M5 color-management math (§14, §86). Pure JVM (no android.*) so unit tests
+ * pin the tolerances directly.
+ *
+ * Pipeline assumption (documented, not detected): every decoded [Bitmap]
+ * entering the pipeline is treated as sRGB-encoded. BitmapFactory does not
+ * apply embedded ICC profiles, so wide-gamut input profiles (Display P3 /
+ * Adobe RGB JPEGs, HDR gain-map images) are NOT honored — they render as if
+ * sRGB. Claiming otherwise is explicitly out of scope; see M16 follow-up.
+ *
+ * Working space: the grade math stays sRGB-math (gamma-encoded) on both
+ * qualities for speed and golden stability. Linear-light handling exists only
+ * where color science demands it: the sRGB<->Display P3 conversion below
+ * linearizes first (piecewise sRGB EOTF), converts via D65 XYZ, then
+ * re-encodes. sRGB and Display P3 share the identical transfer function, so
+ * [linearToSrgb] is the correct re-encode for both — no separate P3 EOTF.
+ *
+ * Numerical approach: the D65 matrices are the IEC 61966-2-1 / SMPTE RP 431
+ * reference values in float. The per-pixel CPU path ([CpuColorManager]) uses
+ * [srgb8ToLinearFast] (a 256-entry table baked from [srgbToLinear], hence
+ * bit-identical for 8-bit inputs) and the same [linearToSrgb] formula for
+ * encode, so the table path matches [android.graphics.Color.convert] within
+ * ±1 LSB per channel (float Δ ≤ [P3_MATRIX_TOLERANCE]). Per-pixel
+ * Color.convert was rejected as ~100x slower (JNI per pixel).
+ */
 object ColorMatrices {
     val SRGB_TO_XYZ_D65 = floatArrayOf(
         0.4124564f, 0.3575761f, 0.1804375f,
@@ -71,6 +96,70 @@ object ColorMatrices {
             linearToSrgb(srgbLinear[0]).coerceIn(0f, 1f),
             linearToSrgb(srgbLinear[1]).coerceIn(0f, 1f),
             linearToSrgb(srgbLinear[2]).coerceIn(0f, 1f)
+        )
+    }
+
+    // ---------- M5 tolerances (pinned by ColorPipelineTest) ----------
+
+    // sRGB<->P3 round-trip on in-gamut colors (all sRGB colors are inside the
+    // P3 gamut, so no clipping): float per-channel Δ vs the input.
+    const val P3_ROUNDTRIP_EPS = 0.005f
+    // Matrix path vs platform Color.convert: ±1 LSB per channel.
+    const val P3_MATRIX_TOLERANCE = 0.004f
+    // sRGB EOTF invertibility: linearToSrgb(srgbToLinear(c)) vs c.
+    const val TRANSFER_INVERT_EPS = 0.001f
+
+    // ---------- M5 cached tables (speed path for per-pixel loops) ----------
+
+    // 256-entry sRGB 8-bit -> linear table baked from srgbToLinear at table
+    // build time, so lookups are bit-identical to calling the formula with
+    // (byte/255f). Per-pixel loops over ARGB_8888 pixels always have 8-bit
+    // quantized inputs, making this exact — not an approximation.
+    private val SRGB8_TO_LINEAR: FloatArray =
+        FloatArray(256) { i -> srgbToLinear(i / 255f) }
+
+    fun srgb8ToLinearFast(byte: Int): Float =
+        SRGB8_TO_LINEAR[byte.coerceIn(0, 255)]
+
+    // Linear -> sRGB 8-bit via the same linearToSrgb formula + round-half-up.
+    // Matches the float path within 1 LSB (quantization only).
+    fun linearToSrgb8Fast(linear: Float): Int =
+        (linearToSrgb(linear.coerceIn(0f, 1f)) * 255f + 0.5f).toInt().coerceIn(0, 255)
+
+    // Combined sRGB 8-bit triple -> Display P3 8-bit triple using the cached
+    // linearize table. Same matrices as srgbToDisplayP3; identical output to
+    // the float path within 1 LSB per channel (table is exact, encode rounds).
+    fun srgb8ToP38(r: Int, g: Int, b: Int): IntArray {
+        val xyz = mulVec(
+            SRGB_TO_XYZ_D65,
+            floatArrayOf(
+                srgb8ToLinearFast(r),
+                srgb8ToLinearFast(g),
+                srgb8ToLinearFast(b)
+            )
+        )
+        val p3Linear = mulVec(XYZ_TO_P3_D65, xyz)
+        return intArrayOf(
+            linearToSrgb8Fast(p3Linear[0]),
+            linearToSrgb8Fast(p3Linear[1]),
+            linearToSrgb8Fast(p3Linear[2])
+        )
+    }
+
+    fun p38ToSrgb8(r: Int, g: Int, b: Int): IntArray {
+        val xyz = mulVec(
+            P3_TO_XYZ_D65,
+            floatArrayOf(
+                srgb8ToLinearFast(r),
+                srgb8ToLinearFast(g),
+                srgb8ToLinearFast(b)
+            )
+        )
+        val srgbLinear = mulVec(XYZ_TO_SRGB_D65, xyz)
+        return intArrayOf(
+            linearToSrgb8Fast(srgbLinear[0]),
+            linearToSrgb8Fast(srgbLinear[1]),
+            linearToSrgb8Fast(srgbLinear[2])
         )
     }
 }

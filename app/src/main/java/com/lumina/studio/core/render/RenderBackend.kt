@@ -8,7 +8,12 @@ data class RenderRequest<B : Any>(
     val lut: LutCube?,
     val source: B,
     val target: RenderTarget,
-    val generation: Long
+    val generation: Long,
+    // M5: explicit quality override. Null (default) derives from [target] via
+    // [qualityForTarget], so every existing 5-arg caller keeps working with its
+    // current behavior. Only callers that need FINAL on a Preview-sized frame
+    // (or vice versa) pass this explicitly.
+    val quality: RenderQuality? = null
 )
 
 sealed interface RenderResult<out B : Any> {

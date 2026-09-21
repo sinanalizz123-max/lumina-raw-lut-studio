@@ -41,6 +41,40 @@ enum class RenderColorSpace {
     DISPLAY_P3
 }
 
+/**
+ * M5 precision selector for the CPU pipeline (§10, §14).
+ *
+ * - PREVIEW: interactive path. sRGB-math in [Bitmap.Config.ARGB_8888]
+ *   intermediates (8-bit store, float compute). Fast; rounds fractional stage
+ *   output to 8-bit between stages.
+ * - FINAL: high-quality path (export + fullscreen/zoom-tile final). Same
+ *   sRGB-math recipe, but intermediates use [Bitmap.Config.RGBA_F16]
+ *   (minSdk 26, so no version gate needed; OOM still falls back to 8888).
+ *   Half-float stores 8-bit integers exactly and keeps fractional matrix-stage
+ *   output that PREVIEW would round away, reducing banding in LUT trilinear +
+ *   curves + HSL chains. Final store is still 8-bit for encode/display.
+ *
+ * Both qualities run the identical stage order and recipe
+ * ([PreviewRenderer.render]); FINAL is not a different look, only less
+ * quantization. [ColorPipeline.FINAL_PREVIEW_MAX_DELTA] bounds the visible
+ * difference on test ramps.
+ */
+enum class RenderQuality {
+    PREVIEW,
+    FINAL
+}
+
+// M5: target -> quality mapping. Preview/Thumb stay interactive (PREVIEW);
+// Fullscreen/Tile-final/Export take the high-precision path (FINAL).
+// Pure function (no android.*) so JVM tests can pin the mapping.
+fun qualityForTarget(target: RenderTarget): RenderQuality = when (target) {
+    is RenderTarget.Preview -> RenderQuality.PREVIEW
+    is RenderTarget.Thumb -> RenderQuality.PREVIEW
+    is RenderTarget.Fullscreen -> RenderQuality.FINAL
+    is RenderTarget.Tile -> RenderQuality.FINAL
+    is RenderTarget.Export -> RenderQuality.FINAL
+}
+
 object MemoryBudget {
     const val BYTES_PER_PIXEL_ARGB_8888 = 4L
     const val MAX_RENDER_PIXELS = 120_000_000L

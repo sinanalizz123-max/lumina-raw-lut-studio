@@ -887,6 +887,10 @@ fun EditorScreen(navController: NavController, projectId: String? = null) {
                                 }
                             )
                             DetailRow(
+                                "Color space",
+                                "sRGB (assumed input; P3 converted on export when selected)"
+                            )
+                            DetailRow(
                                 "File size",
                                 detailsFile?.let { Exporter.formatBytes(it.length()) } ?: "–"
                             )

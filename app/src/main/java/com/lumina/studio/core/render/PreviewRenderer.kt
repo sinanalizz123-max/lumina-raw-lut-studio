@@ -24,6 +24,15 @@ import kotlin.math.sin
 import kotlin.math.sqrt
 
 object PreviewRenderer {
+    // M5 color-management + precision notes (§14 input assumption, §10 path):
+    // every bitmap entering render() is assumed sRGB-encoded (BitmapFactory
+    // does not apply embedded ICC profiles; wide-gamut/HDR input profiles are
+    // NOT supported — see ColorMatrices). Grade math stays sRGB-math on both
+    // qualities; FINAL differs only by intermediate store (RGBA_F16) so the
+    // same recipe renders the same look with less quantization. Stage order
+    // LUT -> adjusts -> HSL -> curves -> details -> masks -> crop is identical
+    // for preview and export; Exporter.renderForExport funnels through
+    // CpuRenderBackend with an Export target, which maps to FINAL.
     const val MAX_PREVIEW_DIM = 1600
     const val HISTOGRAM_BINS = 64
     // Phase 4B: performance-gated preview decode. The GPU-acceleration toggle
@@ -69,6 +78,22 @@ object PreviewRenderer {
         return computed
     }
 
+    // M5: intermediate-store selector. RGBA_F16 needs API 26+; minSdk is 26
+    // so no version gate, but OOM/edge devices still fall back per call site.
+    // PREVIEW returns ARGB_8888 (golden behavior, byte-identical to M4).
+    internal fun workingConfig(quality: RenderQuality): Bitmap.Config =
+        if (quality == RenderQuality.FINAL) Bitmap.Config.RGBA_F16
+        else Bitmap.Config.ARGB_8888
+
+    internal fun createWorkingBitmap(w: Int, h: Int, quality: RenderQuality): Bitmap =
+        try {
+            Bitmap.createBitmap(w, h, workingConfig(quality))
+        } catch (_: OutOfMemoryError) {
+            Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        } catch (_: Exception) {
+            Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        }
+
     fun isIdentity(params: EditParams, hasLut: Boolean = false): Boolean =
         params.isDefault() && !hasLut
 
@@ -89,12 +114,42 @@ object PreviewRenderer {
     // blend as out = base*(1-a) + graded*a. Crop runs last as a pure function.
     // Each stage is skipped when its group is default or its history step is
     // disabled, keeping the <100ms budget.
-    fun render(src: Bitmap, params: EditParams, lut: LutCube? = null): Bitmap {
+    //
+    // M5 gamma/luminance audit (§86) — domain choice per operation. Nothing
+    // below changes pixel math (zero-risk rule); entries marked M16 are known
+    // approximations kept deliberately for golden stability:
+    // - Exposure (buildMatrix, 2^EV gain + mask expScale): applied to
+    //   gamma-encoded sRGB, i.e. a linear-ish gain in the wrong domain.
+    //   Physically it belongs in linear light; in gamma it over-brightens
+    //   midtones slightly. Kept: every golden/preset depends on it (M16).
+    // - Contrast pivot 128 + tone offsets: gamma-domain contrast around
+    //   mid-grey. Correct domain for a display-referred "punch" control.
+    // - Saturation/vibrance (setSaturation) + HSL hue/sat/lum edits: operate
+    //   on gamma-encoded values via RGB<->HSL. HSL is defined on gamma RGB,
+    //   so this is the correct domain for selective-color UX (M16 could move
+    //   global-sat to linear for physical purity; kept for stability).
+    // - Temperature/tint channel gains: gamma-domain white-balance approx.
+    //   True WB belongs in linear/raw; gamma gains are the standard
+    //   display-referred approximation. Kept (M16 with real RAW demosaic).
+    // - Mask blend out = base*(1-a) + graded*a in gamma: matches overlay UX;
+    //   linear blend would look more physical but change every mask (M16).
+    // - Curves: display-referred tone map on gamma values by design.
+    // - LUT trilinear: interpolates in the LUT's native (gamma) domain.
+    // M5 precision (§10): [quality] selects the intermediate store only.
+    // PREVIEW (default) keeps M4 ARGB_8888 behavior so all existing callers
+    // compile and render byte-identically; FINAL uses RGBA_F16 intermediates
+    // for the LUT/curve/HSL/matrix chain (export + fullscreen/zoom-tile final).
+    fun render(
+        src: Bitmap,
+        params: EditParams,
+        lut: LutCube? = null,
+        quality: RenderQuality = RenderQuality.PREVIEW
+    ): Bitmap {
         val steps = params.steps
         val useLut = lut != null && params.presetId != null && params.presetIntensity > 0f &&
             steps.get(StepKey.PRESET) && steps.get(StepKey.LUT)
         val graded = if (useLut) {
-            LutRenderer.applyLut(src, lut, params.presetIntensity)
+            LutRenderer.applyLut(src, lut, params.presetIntensity, workingConfig(quality))
         } else {
             src
         }
@@ -102,7 +157,7 @@ object PreviewRenderer {
         var current = graded
         if (!params.isAdjustsDefault() && steps.get(StepKey.ADJUSTS)) {
             val combined = buildMatrix(params)
-            val out = applyMatrix(current, combined)
+            val out = applyMatrix(current, combined, quality)
             if (out !== current) {
                 if (current !== src) current.recycle()
                 current = out
@@ -114,7 +169,7 @@ object PreviewRenderer {
                     .coerceIn(0f, 3f)
                 if (saturation != 1f) {
                     val cm = ColorMatrix().apply { setSaturation(saturation) }
-                    val out = applyMatrix(current, cm)
+                    val out = applyMatrix(current, cm, quality)
                     if (out !== current) {
                         if (current !== src) current.recycle()
                         current = out
@@ -122,7 +177,7 @@ object PreviewRenderer {
                 }
             }
             if (params.hasPerColorHsl()) {
-                val out = applyHslPerColor(current, params)
+                val out = applyHslPerColor(current, params, quality)
                 if (out !== current) {
                     if (current !== src) current.recycle()
                     current = out
@@ -130,21 +185,21 @@ object PreviewRenderer {
             }
         }
         if (!params.isCurvesDefault() && steps.get(StepKey.CURVES)) {
-            val out = applyCurves(current, params)
+            val out = applyCurves(current, params, quality)
             if (out !== current) {
                 if (current !== src) current.recycle()
                 current = out
             }
         }
         if (!params.isDetailsDefault() && steps.get(StepKey.DETAILS)) {
-            val out = applyDetails(current, src, params)
+            val out = applyDetails(current, src, params, quality)
             if (out !== current) {
                 if (current !== src) current.recycle()
                 current = out
             }
         }
         if (params.masks.isNotEmpty() && steps.get(StepKey.MASKS)) {
-            val out = applyMasks(current, params)
+            val out = applyMasks(current, params, quality)
             if (out !== current) {
                 if (current !== src) current.recycle()
                 current = out
@@ -160,8 +215,12 @@ object PreviewRenderer {
         return current
     }
 
-    private fun applyMatrix(src: Bitmap, matrix: ColorMatrix): Bitmap {
-        val out = Bitmap.createBitmap(src.width, src.height, Bitmap.Config.ARGB_8888)
+    private fun applyMatrix(
+        src: Bitmap,
+        matrix: ColorMatrix,
+        quality: RenderQuality = RenderQuality.PREVIEW
+    ): Bitmap {
+        val out = createWorkingBitmap(src.width, src.height, quality)
         val paint = Paint().apply {
             colorFilter = ColorMatrixColorFilter(matrix)
             isFilterBitmap = true
@@ -170,7 +229,11 @@ object PreviewRenderer {
         return out
     }
 
-    fun applyHslPerColor(src: Bitmap, params: EditParams): Bitmap {
+    fun applyHslPerColor(
+        src: Bitmap,
+        params: EditParams,
+        quality: RenderQuality = RenderQuality.PREVIEW
+    ): Bitmap {
         val w = src.width
         val h = src.height
         if (w <= 0 || h <= 0) return src
@@ -240,12 +303,16 @@ object PreviewRenderer {
                 }
             }
         }
-        val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val out = createWorkingBitmap(w, h, quality)
         out.setPixels(pixels, 0, w, 0, 0, w, h)
         return out
     }
 
-    fun applyCurves(src: Bitmap, params: EditParams): Bitmap {
+    fun applyCurves(
+        src: Bitmap,
+        params: EditParams,
+        quality: RenderQuality = RenderQuality.PREVIEW
+    ): Bitmap {
         val w = src.width
         val h = src.height
         if (w <= 0 || h <= 0) return src
@@ -278,12 +345,17 @@ object PreviewRenderer {
             if (blueLut != null) b = (blueLut[b] * 255f + 0.5f).toInt().coerceIn(0, 255)
             pixels[i] = (a shl 24) or (r shl 16) or (g shl 8) or b
         }
-        val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val out = createWorkingBitmap(w, h, quality)
         out.setPixels(pixels, 0, w, 0, 0, w, h)
         return out
     }
 
-    fun applyDetails(src: Bitmap, originalSrc: Bitmap, params: EditParams): Bitmap {
+    fun applyDetails(
+        src: Bitmap,
+        originalSrc: Bitmap,
+        params: EditParams,
+        quality: RenderQuality = RenderQuality.PREVIEW
+    ): Bitmap {
         var current = src
         val hasMicro = params.texture != 0f || params.clarityAdv != 0f || params.dehazeAdv != 0f
         if (hasMicro) {
@@ -305,7 +377,7 @@ object PreviewRenderer {
             if (saturation != 1f) {
                 result.postConcat(ColorMatrix().apply { setSaturation(saturation) })
             }
-            val out = applyMatrix(current, result)
+            val out = applyMatrix(current, result, quality)
             if (out !== current) {
                 if (current !== originalSrc) current.recycle()
                 current = out
@@ -450,7 +522,11 @@ object PreviewRenderer {
         }
     }
 
-    fun applyMasks(src: Bitmap, params: EditParams): Bitmap {
+    fun applyMasks(
+        src: Bitmap,
+        params: EditParams,
+        quality: RenderQuality = RenderQuality.PREVIEW
+    ): Bitmap {
         val masks = params.masks
         if (masks.isEmpty()) return src
         val w = src.width
@@ -470,7 +546,7 @@ object PreviewRenderer {
             for (mask in active) {
                 applySingleMask(pixels, baseCopy, w, h, mask)
             }
-            val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+            val out = createWorkingBitmap(w, h, quality)
             out.setPixels(pixels, 0, w, 0, 0, w, h)
             out
         } catch (_: Exception) {
