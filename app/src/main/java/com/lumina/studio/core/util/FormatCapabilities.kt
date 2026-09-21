@@ -12,7 +12,7 @@ data class FormatCapability(
     val minSdk: Int? = null,
     val reason: String,
     val badge: String
-}
+)
 
 object FormatCapabilities {
 
