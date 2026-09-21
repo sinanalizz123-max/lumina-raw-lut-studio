@@ -163,6 +163,7 @@ fun EditorScreen(navController: NavController, projectId: String? = null) {
     val selectedCurve by vm.selectedCurve.collectAsState()
     val selectedMaskId by vm.selectedMaskId.collectAsState()
     val showMaskOverlay by vm.showMaskOverlay.collectAsState()
+    val maskSampleArmedId by vm.maskSampleArmedId.collectAsState()
     val zoomTile by vm.zoomTile.collectAsState()
     val zoomWarning by vm.zoomWarning.collectAsState()
     val zoomEnhancing by vm.zoomEnhancing.collectAsState()
@@ -526,8 +527,8 @@ fun EditorScreen(navController: NavController, projectId: String? = null) {
                             translationX = offset.x
                             translationY = offset.y
                         }
-                        .transformable(transformState, enabled = !eyedropperArmed && !pointEyedropperArmed)
-                        .pointerInput(eyedropperArmed, pointEyedropperArmed, displayBitmap, viewportSize) {
+                        .transformable(transformState, enabled = !eyedropperArmed && !pointEyedropperArmed && maskSampleArmedId == null)
+                        .pointerInput(eyedropperArmed, pointEyedropperArmed, maskSampleArmedId, displayBitmap, viewportSize) {
                             detectTapGestures(
                                 onDoubleTap = {
                                     vm.toggleFullscreen()
@@ -550,6 +551,32 @@ fun EditorScreen(navController: NavController, projectId: String? = null) {
                                     }
                                 },
                                 onTap = { tap ->
+                                    if (maskSampleArmedId != null) {
+                                        val bmp = displayBitmap ?: return@detectTapGestures
+                                        val vw = viewportSize.width.toFloat()
+                                        val vh = viewportSize.height.toFloat()
+                                        if (vw <= 0f || vh <= 0f) return@detectTapGestures
+                                        val bw = bmp.width.toFloat()
+                                        val bh = bmp.height.toFloat()
+                                        if (bw <= 0f || bh <= 0f) return@detectTapGestures
+                                        val fitScale = minOf(vw / bw, vh / bh)
+                                        if (fitScale <= 0f) return@detectTapGestures
+                                        val drawnW = bw * fitScale
+                                        val drawnH = bh * fitScale
+                                        val left = (vw - drawnW) / 2f
+                                        val top = (vh - drawnH) / 2f
+                                        val x = tap.x
+                                        val y = tap.y
+                                        if (x < left || x > left + drawnW || y < top || y > top + drawnH) return@detectTapGestures
+                                        val bx = ((x - left) / fitScale).toInt().coerceIn(0, bmp.width - 1)
+                                        val by = ((y - top) / fitScale).toInt().coerceIn(0, bmp.height - 1)
+                                        try {
+                                            if (bmp.isRecycled) return@detectTapGestures
+                                            vm.maskSamplePick(bmp.getPixel(bx, by))
+                                        } catch (_: Exception) {
+                                        }
+                                        return@detectTapGestures
+                                    }
                                     if (pointEyedropperArmed) {
                                         val bmp = displayBitmap ?: return@detectTapGestures
                                         val vw = viewportSize.width.toFloat()
@@ -705,20 +732,18 @@ fun EditorScreen(navController: NavController, projectId: String? = null) {
                         }
                     }
                     if (!effectiveOriginal && showPointAffected) {
+                        // Read + recycle-check hoisted out: try/catch is illegal
+                        // around @Composable invocations (M6 CI fix).
                         val pcm = pointColorMask
-                        if (pcm != null) {
-                            try {
-                                if (!pcm.isRecycled) {
-                                    Image(
-                                        bitmap = pcm.asImageBitmap(),
-                                        contentDescription = null,
-                                        modifier = Modifier.fillMaxSize(),
-                                        contentScale = ContentScale.Fit,
-                                        alpha = 0.6f
-                                    )
-                                }
-                            } catch (_: Exception) {
-                            }
+                        val pcmReady = pcm != null && runCatching { !pcm.isRecycled }.getOrDefault(false)
+                        if (pcmReady && pcm != null) {
+                            Image(
+                                bitmap = pcm.asImageBitmap(),
+                                contentDescription = null,
+                                modifier = Modifier.fillMaxSize(),
+                                contentScale = ContentScale.Fit,
+                                alpha = 0.6f
+                            )
                         }
                     }
                 }
@@ -1117,7 +1142,14 @@ fun EditorScreen(navController: NavController, projectId: String? = null) {
                             onStraighten = { vm.setStraighten(it) },
                             onFlipH = { vm.toggleFlipH() },
                             onFlipV = { vm.toggleFlipV() },
-                            onReset = { vm.resetCrop() }
+                            onReset = { vm.resetCrop() },
+                            onPerspectiveV = { vm.setPerspectiveV(it) },
+                            onPerspectiveH = { vm.setPerspectiveH(it) },
+                            onCustomAspect = { w, h -> vm.setCustomAspect(w, h) },
+                            onVignette = { vm.setVignetteCorr(it) },
+                            onCa = { vm.setCaShift(it) },
+                            onDistortion = { vm.setDistortion(it) },
+                            onResetOptics = { vm.resetOptics() }
                         )
                     } else if (tool == EditorTool.MASK) {
                         MaskToolPanel(
@@ -1139,7 +1171,18 @@ fun EditorScreen(navController: NavController, projectId: String? = null) {
                             onExposure = { id, v -> vm.setMaskExposure(id, v) },
                             onTemperature = { id, v -> vm.setMaskTemperature(id, v) },
                             onToggleOverlay = { vm.setShowMaskOverlay(it) },
-                            onResetAll = { vm.resetMasks() }
+                            onResetAll = { vm.resetMasks() },
+                            onOp = { id, op -> vm.setMaskOp(id, op) },
+                            onSaturation = { id, v -> vm.setMaskSaturation(id, v) },
+                            onClarity = { id, v -> vm.setMaskClarity(id, v) },
+                            onBlur = { id, v -> vm.setMaskBlur(id, v) },
+                            onHueCenter = { id, v -> vm.setMaskHueCenter(id, v) },
+                            onHueRange = { id, v -> vm.setMaskHueRange(id, v) },
+                            onLumaLo = { id, v -> vm.setMaskLumaLo(id, v) },
+                            onLumaHi = { id, v -> vm.setMaskLumaHi(id, v) },
+                            onLumaFeather = { id, v -> vm.setMaskLumaFeather(id, v) },
+                            maskSampleArmedId = maskSampleArmedId,
+                            onArmSample = { vm.armMaskSample(it) }
                         )
                     } else {
                         EditorToolPanel(tool = tool)
@@ -1613,6 +1656,17 @@ private fun MaskOverlay(
                             if (i == pts.size - 2) drawCircle(red, radius = radius, center = Offset(bx, by))
                         }
                     }
+                }
+                com.lumina.studio.core.edit.MaskTool.COLOR, com.lumina.studio.core.edit.MaskTool.LUMINANCE -> {
+                    // Range masks select by color/luma across the frame: show a
+                    // full-frame tint (per-pixel weights are not drawn here).
+                    drawRect(red, topLeft = Offset(left, top), size = androidx.compose.ui.geometry.Size(drawnW, drawnH))
+                    drawRect(
+                        redEdge,
+                        topLeft = Offset(left, top),
+                        size = androidx.compose.ui.geometry.Size(drawnW, drawnH),
+                        style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2f)
+                    )
                 }
             }
         }

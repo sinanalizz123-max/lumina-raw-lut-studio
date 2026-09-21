@@ -158,22 +158,25 @@ class CropMaskTest {
     }
 
     @Test
-    fun `max masks three enforced in addMask`() {
-        assertEquals(3, EditParams.MAX_MASKS)
+    fun `max masks six enforced in addMask`() {
+        assertEquals(6, EditParams.MAX_MASKS)
         var p = EditParams.DEFAULT
         p = p.addMask(MaskTool.BRUSH)
         assertEquals(1, p.masks.size)
         p = p.addMask(MaskTool.RADIAL)
         p = p.addMask(MaskTool.LINEAR)
-        assertEquals(3, p.masks.size)
+        p = p.addMask(MaskTool.COLOR)
+        p = p.addMask(MaskTool.LUMINANCE)
+        p = p.addMask(MaskTool.ERASER)
+        assertEquals(6, p.masks.size)
         val full = p
         val overflow = p.addMask(MaskTool.BRUSH)
-        assertEquals(3, overflow.masks.size)
+        assertEquals(6, overflow.masks.size)
         assertSame(full, overflow)
         // Removal frees a slot.
         val removed = full.removeMask(full.masks.first().id)
-        assertEquals(2, removed.masks.size)
-        assertEquals(3, removed.addMask(MaskTool.ERASER).masks.size)
+        assertEquals(5, removed.masks.size)
+        assertEquals(6, removed.addMask(MaskTool.ERASER).masks.size)
     }
 
     // ---------- StepsEnabled ----------
