@@ -59,9 +59,10 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavController
 import coil.compose.AsyncImage
-import com.lumina.studio.core.data.cache.CacheFileManager
 import com.lumina.studio.core.data.local.DatabaseProvider
+import com.lumina.studio.core.data.local.EditHistory
 import com.lumina.studio.core.data.local.Project
+import com.lumina.studio.core.data.store.ProjectStore
 import com.lumina.studio.core.design.components.EmptyState
 import com.lumina.studio.core.design.components.EmptyStateIllustration
 import com.lumina.studio.core.design.theme.LuminaAmber
@@ -131,8 +132,8 @@ fun HomeScreen(navController: NavController, homeViewModel: HomeViewModel = view
         scope.launch {
             val projectId = withContext(Dispatchers.IO) {
                 runCatching {
-                    val cache = CacheFileManager(context.applicationContext)
-                    val db = DatabaseProvider.get(context.applicationContext)
+                    val appContext = context.applicationContext
+                    val db = DatabaseProvider.get(appContext)
                     val displayName = ImageFiles.displayNameOf(context, uri)
                         ?: "photo"
                     val mime = ImageFiles.mimeOf(context, uri)
@@ -147,11 +148,13 @@ fun HomeScreen(navController: NavController, homeViewModel: HomeViewModel = view
                         }
                     }
                     if (!ImageFiles.isSupported(ext, mime)) return@runCatching null
-                    val file = cache.copyUriToCache(uri, displayName) ?: return@runCatching null
+                    val projectId = UUID.randomUUID().toString()
+                    val file = ProjectStore.copyUriToOriginal(appContext, projectId, uri, displayName)
+                        ?: return@runCatching null
                     val bounds = ImageFiles.decodeBounds(file)
                     val now = System.currentTimeMillis()
                     val project = Project(
-                        id = UUID.randomUUID().toString(),
+                        id = projectId,
                         name = displayName.ifBlank { file.name },
                         photoUri = file.absolutePath,
                         createdAt = now,
@@ -162,6 +165,16 @@ fun HomeScreen(navController: NavController, homeViewModel: HomeViewModel = view
                         height = bounds.height
                     )
                     db.projectDao().upsert(project)
+                    runCatching {
+                        db.editHistoryDao().insert(
+                            EditHistory(
+                                id = UUID.randomUUID().toString(),
+                                projectId = project.id,
+                                toolName = "import",
+                                createdAt = System.currentTimeMillis()
+                            )
+                        )
+                    }
                     project.id
                 }.getOrNull()
             }
@@ -185,13 +198,15 @@ fun HomeScreen(navController: NavController, homeViewModel: HomeViewModel = view
         scope.launch {
             val projectId = withContext(Dispatchers.IO) {
                 runCatching {
-                    val cache = CacheFileManager(context.applicationContext)
-                    val db = DatabaseProvider.get(context.applicationContext)
-                    val file = cache.saveBitmapToCache(bitmap) ?: return@runCatching null
+                    val appContext = context.applicationContext
+                    val db = DatabaseProvider.get(appContext)
+                    val newId = UUID.randomUUID().toString()
+                    val file = ProjectStore.saveBitmapToOriginal(appContext, newId, bitmap)
+                        ?: return@runCatching null
                     val bounds = ImageFiles.decodeBounds(file)
                     val now = System.currentTimeMillis()
                     val project = Project(
-                        id = UUID.randomUUID().toString(),
+                        id = newId,
                         name = file.name,
                         photoUri = file.absolutePath,
                         createdAt = now,
@@ -202,6 +217,16 @@ fun HomeScreen(navController: NavController, homeViewModel: HomeViewModel = view
                         height = bounds.height
                     )
                     db.projectDao().upsert(project)
+                    runCatching {
+                        db.editHistoryDao().insert(
+                            EditHistory(
+                                id = UUID.randomUUID().toString(),
+                                projectId = project.id,
+                                toolName = "import",
+                                createdAt = System.currentTimeMillis()
+                            )
+                        )
+                    }
                     project.id
                 }.getOrNull()
             }

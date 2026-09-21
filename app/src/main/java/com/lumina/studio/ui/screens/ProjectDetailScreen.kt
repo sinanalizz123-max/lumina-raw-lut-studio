@@ -1,6 +1,9 @@
 package com.lumina.studio.ui.screens
 
 import android.app.Application
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -25,9 +28,12 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -44,6 +50,7 @@ import androidx.navigation.NavController
 import coil.compose.AsyncImage
 import com.lumina.studio.core.data.local.DatabaseProvider
 import com.lumina.studio.core.data.local.Project
+import com.lumina.studio.core.data.store.ProjectStore
 import com.lumina.studio.core.design.components.EmptyState
 import com.lumina.studio.core.design.components.EmptyStateIllustration
 import com.lumina.studio.core.design.components.LoadingShimmer
@@ -56,6 +63,7 @@ import com.lumina.studio.core.design.theme.LuminaSurfaceContainerLow
 import com.lumina.studio.core.util.ImageFiles
 import com.lumina.studio.core.util.timeAgo
 import com.lumina.studio.navigation.Routes
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -73,6 +81,16 @@ class ProjectDetailViewModel(application: Application) : AndroidViewModel(applic
 
     private val _loading = MutableStateFlow(true)
     val loading: StateFlow<Boolean> = _loading.asStateFlow()
+
+    private val _photoMissing = MutableStateFlow(false)
+    val photoMissing: StateFlow<Boolean> = _photoMissing.asStateFlow()
+
+    private val _notice = MutableStateFlow<String?>(null)
+    val notice: StateFlow<String?> = _notice.asStateFlow()
+
+    fun consumeNotice() {
+        _notice.value = null
+    }
 
     fun load(projectId: String) {
         viewModelScope.launch {
@@ -93,6 +111,9 @@ class ProjectDetailViewModel(application: Application) : AndroidViewModel(applic
                 }
             }
             _project.value = resolved
+            val photoPath = resolved?.photoUri
+            _photoMissing.value = resolved != null &&
+                (photoPath.isNullOrBlank() || !File(photoPath).isFile)
             _editCount.value = database.editHistoryDao().countForProject(projectId)
             _loading.value = false
         }
@@ -107,6 +128,40 @@ class ProjectDetailViewModel(application: Application) : AndroidViewModel(applic
             )
             database.projectDao().upsert(updated)
             _project.value = updated
+        }
+    }
+
+    fun relocatePhoto(uri: Uri) {
+        val current = _project.value ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            val dest = ProjectStore.copyUriToOriginal(getApplication(), current.id, uri, null)
+            if (dest == null) {
+                _notice.value = "Could not read that file"
+                return@launch
+            }
+            val bounds = ImageFiles.decodeBounds(dest)
+            val updated = current.copy(
+                photoUri = dest.absolutePath,
+                updatedAt = System.currentTimeMillis(),
+                width = bounds.width.takeIf { it > 0 } ?: current.width,
+                height = bounds.height.takeIf { it > 0 } ?: current.height
+            )
+            database.projectDao().upsert(updated)
+            _project.value = updated
+            _photoMissing.value = false
+        }
+    }
+
+    fun removeProject() {
+        val current = _project.value ?: return
+        _project.value = null
+        _photoMissing.value = false
+        viewModelScope.launch(Dispatchers.IO) {
+            val app = getApplication<Application>()
+            database.projectDao().deleteById(current.id)
+            runCatching { database.editHistoryDao().clearForProject(current.id) }
+            runCatching { ProjectStore.deleteProjectFiles(app, current.id) }
+            runCatching { ProjectStore.deleteOwnedFile(app, current.photoUri) }
         }
     }
 }
@@ -124,6 +179,22 @@ fun ProjectDetailScreen(
     val project by detailViewModel.project.collectAsState()
     val editCount by detailViewModel.editCount.collectAsState()
     val loading by detailViewModel.loading.collectAsState()
+    val photoMissing by detailViewModel.photoMissing.collectAsState()
+    val notice by detailViewModel.notice.collectAsState()
+    val snackbarHostState = remember { SnackbarHostState() }
+
+    val locateLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) detailViewModel.relocatePhoto(uri)
+    }
+
+    LaunchedEffect(notice) {
+        if (notice != null) {
+            snackbarHostState.showSnackbar(notice!!)
+            detailViewModel.consumeNotice()
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -146,7 +217,8 @@ fun ProjectDetailScreen(
                     }
                 }
             )
-        }
+        },
+        snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { padding ->
         Column(
             modifier = Modifier
@@ -175,22 +247,74 @@ fun ProjectDetailScreen(
                 val file = File(path)
                 if (file.exists()) file else path
             }
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = LuminaSurfaceContainerLow
-                )
-            ) {
-                AsyncImage(
-                    model = model,
-                    contentDescription = current.name,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(280.dp)
-                        .clip(RoundedCornerShape(16.dp)),
-                    contentScale = ContentScale.Crop
-                )
+            if (photoMissing) {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = LuminaSurfaceContainerLow
+                    )
+                ) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Text(
+                            "Photo unavailable",
+                            style = LuminaSectionHeaderTextStyle,
+                            color = LuminaOnSurface
+                        )
+                        Text(
+                            "The original file for this project is missing. " +
+                                "Locate it again or remove the project.",
+                            style = LuminaCaptionTextStyle,
+                            color = LuminaMuted
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Button(
+                                onClick = { locateLauncher.launch(arrayOf("image/*")) },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .heightIn(min = 48.dp)
+                            ) {
+                                Text("Locate file")
+                            }
+                            OutlinedButton(
+                                onClick = {
+                                    detailViewModel.removeProject()
+                                    navController.popBackStack()
+                                },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .heightIn(min = 48.dp)
+                            ) {
+                                Text("Remove project")
+                            }
+                        }
+                    }
+                }
+            } else {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = LuminaSurfaceContainerLow
+                    )
+                ) {
+                    AsyncImage(
+                        model = model,
+                        contentDescription = current.name,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(280.dp)
+                            .clip(RoundedCornerShape(16.dp)),
+                        contentScale = ContentScale.Crop
+                    )
+                }
             }
             Text(
                 current.name,
@@ -245,34 +369,36 @@ fun ProjectDetailScreen(
                     )
                 }
             }
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Button(
-                    onClick = { navController.navigate(Routes.editor(current.id)) },
-                    modifier = Modifier
-                        .weight(1f)
-                        .heightIn(min = 48.dp)
+            if (!photoMissing) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("Open in editor")
-                }
-                OutlinedButton(
-                    onClick = {
-                        try {
-                            navController.currentBackStackEntry?.savedStateHandle?.set(
-                                "history_project_id", current.id
-                            )
-                        } catch (_: Exception) {
-                        }
-                        navController.navigate(Routes.HISTORY)
-                    },
-                    modifier = Modifier
-                        .weight(1f)
-                        .heightIn(min = 48.dp)
-                ) {
-                    Text("View history")
+                    Button(
+                        onClick = { navController.navigate(Routes.editor(current.id)) },
+                        modifier = Modifier
+                            .weight(1f)
+                            .heightIn(min = 48.dp)
+                    ) {
+                        Text("Open in editor")
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            try {
+                                navController.currentBackStackEntry?.savedStateHandle?.set(
+                                    "history_project_id", current.id
+                                )
+                            } catch (_: Exception) {
+                            }
+                            navController.navigate(Routes.HISTORY)
+                        },
+                        modifier = Modifier
+                            .weight(1f)
+                            .heightIn(min = 48.dp)
+                    ) {
+                        Text("View history")
+                    }
                 }
             }
             Spacer(modifier = Modifier.height(4.dp))

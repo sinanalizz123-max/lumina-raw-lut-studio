@@ -131,6 +131,12 @@ fun SettingsScreen(navController: NavController, settingsViewModel: SettingsView
                         Text("Clear cache")
                     }
                 }
+                Text(
+                    "Clearing the cache only removes temporary files. " +
+                        "Originals are never deleted.",
+                    style = LuminaCaptionTextStyle,
+                    color = LuminaMuted
+                )
             }
 
             SettingsSection(title = "Export defaults") {

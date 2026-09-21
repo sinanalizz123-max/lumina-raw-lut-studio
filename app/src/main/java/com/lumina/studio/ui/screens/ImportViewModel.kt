@@ -5,9 +5,10 @@ import android.graphics.Bitmap
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.lumina.studio.core.data.cache.CacheFileManager
 import com.lumina.studio.core.data.local.DatabaseProvider
+import com.lumina.studio.core.data.local.EditHistoryLog
 import com.lumina.studio.core.data.local.Project
+import com.lumina.studio.core.data.store.ProjectStore
 import com.lumina.studio.core.util.ExifInfo
 import com.lumina.studio.core.util.ExifReader
 import com.lumina.studio.core.util.ImageFiles
@@ -31,7 +32,6 @@ data class ImportUiState(
 
 class ImportViewModel(application: Application) : AndroidViewModel(application) {
     private val database = DatabaseProvider.get(application)
-    private val cacheManager = CacheFileManager(application)
 
     private val _uiState = MutableStateFlow(ImportUiState())
     val uiState: StateFlow<ImportUiState> = _uiState.asStateFlow()
@@ -77,12 +77,14 @@ class ImportViewModel(application: Application) : AndroidViewModel(application) 
             _uiState.value = _uiState.value.copy(isImporting = true, errorMessage = null)
             val result = withContext(Dispatchers.IO) {
                 runCatching {
-                    val file = cacheManager.saveBitmapToCache(bitmap)
+                    val app = getApplication<Application>()
+                    val projectId = UUID.randomUUID().toString()
+                    val file = ProjectStore.saveBitmapToOriginal(app, projectId, bitmap, baseName)
                         ?: throw IllegalStateException("Could not save camera photo")
                     val bounds = ImageFiles.decodeBounds(file)
                     val now = System.currentTimeMillis()
                     val project = Project(
-                        id = UUID.randomUUID().toString(),
+                        id = projectId,
                         name = "$baseName.jpg",
                         photoUri = file.absolutePath,
                         createdAt = now,
@@ -93,6 +95,7 @@ class ImportViewModel(application: Application) : AndroidViewModel(application) 
                         height = bounds.height
                     )
                     database.projectDao().upsert(project)
+                    EditHistoryLog.log(database, project.id, EditHistoryLog.IMPORT)
                     ImportResult.Success(project.id, false, ExifInfo())
                 }.getOrElse { e -> ImportResult.Error(e.message ?: "Import failed") }
             }
@@ -144,14 +147,15 @@ class ImportViewModel(application: Application) : AndroidViewModel(application) 
             val label = extension.ifEmpty { mime ?: "unknown" }
             return ImportResult.Error("Unsupported format: $label. Supported: JPG, PNG, WebP, TIFF, HEIC, AVIF, BMP, GIF, DNG and RAW.")
         }
-        val cached: File = cacheManager.copyUriToCache(uri, displayName)
+        val projectId = UUID.randomUUID().toString()
+        val cached: File = ProjectStore.copyUriToOriginal(context, projectId, uri, displayName)
             ?: return ImportResult.Error("Could not read that file.")
         val bounds = ImageFiles.decodeBounds(cached)
         val exif = ExifReader.read(cached)
         val isRaw = ImageFiles.isRaw(extension)
         val now = System.currentTimeMillis()
         val project = Project(
-            id = UUID.randomUUID().toString(),
+            id = projectId,
             name = displayName.ifBlank { cached.name },
             photoUri = cached.absolutePath,
             createdAt = now,
@@ -162,6 +166,7 @@ class ImportViewModel(application: Application) : AndroidViewModel(application) 
             height = bounds.height
         )
         database.projectDao().upsert(project)
+        EditHistoryLog.log(database, project.id, EditHistoryLog.IMPORT)
         return ImportResult.Success(project.id, isRaw, exif)
     }
 }

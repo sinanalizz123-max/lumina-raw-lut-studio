@@ -35,6 +35,7 @@ import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -66,8 +67,16 @@ import java.io.File
 @Composable
 fun ProjectsScreen(navController: NavController, projectsViewModel: ProjectsViewModel = viewModel()) {
     val uiState by projectsViewModel.uiState.collectAsState()
+    val notice by projectsViewModel.notice.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
+
+    LaunchedEffect(notice) {
+        if (notice != null) {
+            snackbarHostState.showSnackbar(notice!!)
+            projectsViewModel.consumeNotice()
+        }
+    }
 
     Scaffold(
         topBar = { TopAppBar(title = { Text("Projects") }) },
@@ -146,7 +155,12 @@ fun ProjectsScreen(navController: NavController, projectsViewModel: ProjectsView
                                         actionLabel = "Undo"
                                     )
                                     if (result == SnackbarResult.ActionPerformed) {
-                                        projectsViewModel.undoDelete()
+                                        val restored = projectsViewModel.undoDelete()
+                                        if (restored == null) {
+                                            snackbarHostState.showSnackbar(
+                                                "Original file was already deleted"
+                                            )
+                                        }
                                     }
                                 }
                             }

@@ -7,13 +7,20 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.lifecycle.lifecycleScope
 import com.lumina.studio.core.data.datastore.SettingsRepository
+import com.lumina.studio.core.data.store.StorageMigration
 import com.lumina.studio.core.design.theme.LuminaTheme
 import com.lumina.studio.navigation.AppNav
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        lifecycleScope.launch(Dispatchers.IO) {
+            runCatching { StorageMigration.runIfNeeded(applicationContext) }
+        }
         enableEdgeToEdge()
         setContent {
             val repository = remember { SettingsRepository(applicationContext) }

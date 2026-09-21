@@ -5,8 +5,8 @@ import androidx.room.RoomDatabase
 
 @Database(
     entities = [Project::class, EditHistory::class, Preset::class, Pack::class],
-    version = 3, // version = 1 -> 2: added Project.editParamsJson; 2 -> 3: added Preset.category/isFavorite/defaultIntensity/cubeText (destructive fallback)
-    exportSchema = false
+    version = 3, // v1 -> v2: added Project.editParamsJson; v2 -> v3: added Preset.category/isFavorite/defaultIntensity/cubeText (see LuminaMigrations)
+    exportSchema = true
 )
 abstract class LuminaDatabase : RoomDatabase() {
     abstract fun projectDao(): ProjectDao

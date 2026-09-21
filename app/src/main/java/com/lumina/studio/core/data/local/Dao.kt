@@ -14,6 +14,9 @@ interface ProjectDao {
     @Query("SELECT * FROM projects ORDER BY updatedAt DESC LIMIT :limit")
     fun observeRecent(limit: Int): Flow<List<Project>>
 
+    @Query("SELECT * FROM projects ORDER BY updatedAt DESC")
+    suspend fun getAll(): List<Project>
+
     @Query("SELECT * FROM projects WHERE id = :id")
     suspend fun getById(id: String): Project?
 

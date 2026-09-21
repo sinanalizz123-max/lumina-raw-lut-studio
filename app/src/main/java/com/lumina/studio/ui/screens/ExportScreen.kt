@@ -69,6 +69,8 @@ import com.lumina.studio.core.design.theme.LuminaOnSurface
 import com.lumina.studio.core.design.theme.LuminaSectionHeaderTextStyle
 import com.lumina.studio.core.design.theme.LuminaSurfaceContainerLow
 import com.lumina.studio.core.data.datastore.SettingsRepository
+import com.lumina.studio.core.data.local.DatabaseProvider
+import com.lumina.studio.core.data.local.EditHistoryLog
 import com.lumina.studio.core.export.ExportColorSpace
 import com.lumina.studio.core.export.ExportFormat
 import com.lumina.studio.core.export.ExportSettings
@@ -223,6 +225,13 @@ fun ExportScreen(navController: NavController, projectId: String? = null) {
                 savedUri = uri
                 savedName = name
                 progress = 1f
+                runCatching {
+                    EditHistoryLog.log(
+                        DatabaseProvider.get(context.applicationContext),
+                        projectId,
+                        EditHistoryLog.EXPORT
+                    )
+                }
             } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
                 error = e.message ?: "Export failed"
@@ -248,6 +257,13 @@ fun ExportScreen(navController: NavController, projectId: String? = null) {
                 rawUri = withContext(Dispatchers.IO) {
                     Exporter.exportRawOriginal(context, source, name)
                 }
+                runCatching {
+                    EditHistoryLog.log(
+                        DatabaseProvider.get(context.applicationContext),
+                        projectId,
+                        EditHistoryLog.EXPORT
+                    )
+                }
             } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
                 rawError = e.message ?: "RAW export failed"
@@ -268,6 +284,13 @@ fun ExportScreen(navController: NavController, projectId: String? = null) {
                 val sidecarName = Exporter.sidecarNameFor(rawName)
                 sidecarUri = withContext(Dispatchers.IO) {
                     Exporter.exportSidecar(context, vm.params.value, sidecarName, rawName)
+                }
+                runCatching {
+                    EditHistoryLog.log(
+                        DatabaseProvider.get(context.applicationContext),
+                        projectId,
+                        EditHistoryLog.EXPORT
+                    )
                 }
             } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException) throw e

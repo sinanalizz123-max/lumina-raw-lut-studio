@@ -5,12 +5,16 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.lumina.studio.core.data.cache.CacheFileManager
 import com.lumina.studio.core.data.datastore.SettingsRepository
+import com.lumina.studio.core.data.store.ProjectStore
+import com.lumina.studio.core.data.store.ProjectStoreLayout
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class SettingsViewModel(application: Application) : AndroidViewModel(application) {
     private val repository = SettingsRepository(application)
@@ -32,20 +36,28 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     private val _cacheSize = MutableStateFlow(cacheManager.cacheSizeDisplay())
     val cacheSize: StateFlow<String> = _cacheSize.asStateFlow()
 
+    private val _originalsSize = MutableStateFlow("…")
+    val originalsSize: StateFlow<String> = _originalsSize.asStateFlow()
+
     private val _cacheMessage = MutableStateFlow<String?>(null)
     val cacheMessage: StateFlow<String?> = _cacheMessage.asStateFlow()
 
     fun refreshCacheSize() {
         viewModelScope.launch {
-            _cacheSize.value = cacheManager.cacheSizeDisplay()
+            _cacheSize.value = withContext(Dispatchers.IO) { cacheManager.cacheSizeDisplay() }
+            _originalsSize.value = withContext(Dispatchers.IO) {
+                ProjectStoreLayout.formatBytes(ProjectStore.projectsSize(getApplication()))
+            }
         }
     }
 
     fun clearCache() {
         viewModelScope.launch {
-            val ok = cacheManager.clearCache()
-            _cacheSize.value = cacheManager.cacheSizeDisplay()
-            _cacheMessage.value = if (ok) "Cache cleared" else "Could not clear everything"
+            val ok = withContext(Dispatchers.IO) { cacheManager.clearCache() }
+            _cacheSize.value = withContext(Dispatchers.IO) { cacheManager.cacheSizeDisplay() }
+            _cacheMessage.value =
+                if (ok) "Cache cleared — originals are never deleted"
+                else "Could not clear everything"
         }
     }
 

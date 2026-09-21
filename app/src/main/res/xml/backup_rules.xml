@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Auto Backup (API 23-30): only durable data is included. The cache dir is
+    never backed up by the platform, and all disposable previews, thumbnails
+    and temporary files live only there (see ProjectStore). -->
+<full-backup-content>
+    <include domain="database" path="." />
+    <include domain="file" path="projects" />
+    <include domain="file" path="luts" />
+    <include domain="file" path="datastore" />
+    <include domain="sharedpref" path="." />
+</full-backup-content>

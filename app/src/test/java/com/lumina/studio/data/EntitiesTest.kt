@@ -5,6 +5,7 @@ import com.lumina.studio.core.data.local.Pack
 import com.lumina.studio.core.data.local.Preset
 import com.lumina.studio.core.data.local.Project
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -162,12 +163,17 @@ class EntitiesTest {
     }
 
     @Test
-    fun `database wires all entities with version 1 and stable name`() {
+    fun `database wires all entities with version 3 and stable name`() {
         val src = mainSource("com/lumina/studio/core/data/local/LuminaDatabase.kt")
         for (entity in listOf("Project::class", "EditHistory::class", "Preset::class", "Pack::class")) {
             assertTrue("LuminaDatabase must list entity $entity", src.contains(entity))
         }
-        assertTrue(src.contains("version = 1"))
+        // M2: explicit migrations replaced the destructive fallback; schema is v3.
+        assertTrue(src.contains("version = 3"))
+        assertFalse(
+            "Destructive migration must never return for user data",
+            src.contains("fallbackToDestructiveMigration")
+        )
         assertTrue(src.contains("DATABASE_NAME = \"lumina.db\""))
         for (dao in listOf("projectDao()", "editHistoryDao()", "presetDao()", "packDao()")) {
             assertTrue("LuminaDatabase must expose $dao", src.contains(dao))

@@ -30,11 +30,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavController
+import com.lumina.studio.core.design.theme.LuminaCaptionTextStyle
+import com.lumina.studio.core.design.theme.LuminaMuted
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun StorageScreen(navController: NavController, settingsViewModel: SettingsViewModel = viewModel()) {
     val cacheSize by settingsViewModel.cacheSize.collectAsState()
+    val originalsSize by settingsViewModel.originalsSize.collectAsState()
     val cacheMessage by settingsViewModel.cacheMessage.collectAsState()
     val previewQuality by settingsViewModel.previewQuality.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
@@ -83,6 +86,20 @@ fun StorageScreen(navController: NavController, settingsViewModel: SettingsViewM
                         Text("Clear cache")
                     }
                 }
+                Text(
+                    "Clearing the cache frees about $cacheSize of temporary files. " +
+                        "Originals are never deleted.",
+                    style = LuminaCaptionTextStyle,
+                    color = LuminaMuted
+                )
+            }
+            SettingsSection(title = "Originals") {
+                Text("Originals: $originalsSize")
+                Text(
+                    "Original photos are stored safely and are kept when clearing the cache.",
+                    style = LuminaCaptionTextStyle,
+                    color = LuminaMuted
+                )
             }
             SettingsSection(title = "Preview") {
                 SettingsChoiceRow(

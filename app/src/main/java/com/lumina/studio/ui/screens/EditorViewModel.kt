@@ -14,6 +14,7 @@ import androidx.lifecycle.viewModelScope
 import androidx.core.net.toUri
 import com.lumina.studio.core.data.datastore.SettingsRepository
 import com.lumina.studio.core.data.local.DatabaseProvider
+import com.lumina.studio.core.data.local.EditHistoryLog
 import com.lumina.studio.core.data.local.Project
 import com.lumina.studio.core.edit.AdjustControl
 import com.lumina.studio.core.edit.CropRatio
@@ -143,6 +144,7 @@ class EditorViewModel(application: Application, private val projectId: String?) 
     private val redoStack = ArrayDeque<EditParams>()
     private var baseBitmap: Bitmap? = null
     private var persistJob: Job? = null
+    private val pendingHistoryTags = LinkedHashSet<String>()
     private var renderJob: Job? = null
     private var loadJob: Job? = null
     private var fullscreenJob: Job? = null
@@ -258,7 +260,7 @@ class EditorViewModel(application: Application, private val projectId: String?) 
             )
             syncUndoRedo()
             renderPreview()
-            schedulePersist()
+            schedulePersist(EditHistoryLog.PRESET)
         }
     }
 
@@ -272,7 +274,7 @@ class EditorViewModel(application: Application, private val projectId: String?) 
         _params.value = current.copy(presetIntensity = clamped)
         syncUndoRedo()
         renderPreview()
-        schedulePersist()
+        schedulePersist(EditHistoryLog.PRESET)
     }
 
     fun clearPreset() {
@@ -1295,7 +1297,8 @@ class EditorViewModel(application: Application, private val projectId: String?) 
         }
     }
 
-    private fun schedulePersist() {
+    private fun schedulePersist(historyTag: String? = EditHistoryLog.EDIT) {
+        if (historyTag != null) pendingHistoryTags.add(historyTag)
         persistJob?.cancel()
         persistJob = viewModelScope.launch {
             delay(PERSIST_DEBOUNCE_MS)
@@ -1305,6 +1308,14 @@ class EditorViewModel(application: Application, private val projectId: String?) 
             val updated = current.withEditParams(params).copy(updatedAt = now)
             withContext(Dispatchers.IO) { database.projectDao().upsert(updated) }
             _project.value = updated
+            val tags = pendingHistoryTags.toList()
+            pendingHistoryTags.clear()
+            if (tags.isNotEmpty()) {
+                val projectId = current.id
+                withContext(Dispatchers.IO) {
+                    for (tag in tags) EditHistoryLog.log(database, projectId, tag)
+                }
+            }
         }
     }
 

@@ -27,6 +27,7 @@ class SettingsRepository(private val context: Context) {
         val PRESET_LIBRARY_PATH = stringPreferencesKey("preset_library_path")
         val HAPTIC_ENABLED = booleanPreferencesKey("haptic_enabled")
         val ANIMATIONS_ENABLED = booleanPreferencesKey("animations_enabled")
+        val STORAGE_MIGRATED = booleanPreferencesKey("storage_migrated_v1")
     }
 
     val theme: Flow<String> = context.settingsStore.data
@@ -67,6 +68,9 @@ class SettingsRepository(private val context: Context) {
 
     val animationsEnabled: Flow<Boolean> = context.settingsStore.data
         .map { prefs -> prefs[Keys.ANIMATIONS_ENABLED] ?: true }
+
+    val storageMigrated: Flow<Boolean> = context.settingsStore.data
+        .map { prefs -> prefs[Keys.STORAGE_MIGRATED] ?: false }
 
     suspend fun setTheme(value: String) {
         context.settingsStore.edit { prefs -> prefs[Keys.THEME] = value }
@@ -118,5 +122,9 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun setAnimationsEnabled(enabled: Boolean) {
         context.settingsStore.edit { prefs -> prefs[Keys.ANIMATIONS_ENABLED] = enabled }
+    }
+
+    suspend fun setStorageMigrated(done: Boolean) {
+        context.settingsStore.edit { prefs -> prefs[Keys.STORAGE_MIGRATED] = done }
     }
 }
