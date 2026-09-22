@@ -19,7 +19,7 @@ object TiffWriter {
         require(rgb.size.toLong() == pixelBytes) {
             "RGB buffer size ${rgb.size} does not match $width x $height x 3"
         }
-                val entryCount = 12
+        val entryCount = 12
         val ifdSize = 2 + entryCount * 12 + 4
         val bitsOffset = 8 + ifdSize
         val xresOffset = bitsOffset + 6
@@ -64,7 +64,6 @@ object TiffWriter {
         u32(72L); u32(1L)
 
         rgb.copyInto(out, pixelOffset.toInt())
-
         return out
     }
 
