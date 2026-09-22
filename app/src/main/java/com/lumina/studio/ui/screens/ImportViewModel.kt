@@ -202,9 +202,9 @@ class ImportViewModel(application: Application) : AndroidViewModel(application) 
                 width = bounds.width,
                 height = bounds.height
             )
-                database.projectDao().upsert(project)
-                EditHistoryLog.log(database, project.id, EditHistoryLog.IMPORT)
-                return ImportResult.Success(project.id, isRaw, exif, previewOnly, previewNote)
+            database.projectDao().upsert(project)
+            EditHistoryLog.log(database, project.id, EditHistoryLog.IMPORT)
+            return ImportResult.Success(project.id, isRaw, exif, previewOnly, previewNote)
         } catch (t: Throwable) {
             runCatching { ProjectStore.deleteProjectFiles(context, projectId) }
             throw t
