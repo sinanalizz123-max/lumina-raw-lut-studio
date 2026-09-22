@@ -126,18 +126,18 @@ class RoutesTest {
     fun `editor tool panels are NOT registered as nav routes`() {
         val bases = allRoutes().map { routeBase(it).lowercase() }.toSet()
 
-        // The 8 in-editor tools from EditorTools.kt. "presets" alone is the
+        // The 10 in-editor tools from EditorTools.kt. "presets" alone is the
         // presets LIBRARY destination (allowed); the Presets TOOL panel must
         // not add its own route.
         val tools = EditorTool.entries
         assertEquals(
             "EditorTool set changed; update nav guard. Found=${tools.map { it.name }}",
-            setOf("PRESETS", "ADJUST", "COLOR", "GRADE", "CURVES", "DETAILS", "CROP", "MASK"),
+            setOf("PRESETS", "ADJUST", "COLOR", "GRADE", "CURVES", "DETAILS", "CROP", "MASK", "RETOUCH", "BLUR"),
             tools.map { it.name }.toSet()
         )
 
         // Tool-specific destinations must not exist (adjust/color/curves/...).
-        val forbiddenBases = setOf("adjust", "color", "grade", "curves", "details", "crop", "mask")
+        val forbiddenBases = setOf("adjust", "color", "grade", "curves", "details", "crop", "mask", "retouch", "blur")
         for (forbidden in forbiddenBases) {
             assertFalse(
                 "Editor tool panel must not be a nav route: '$forbidden' (routes=$bases)",
