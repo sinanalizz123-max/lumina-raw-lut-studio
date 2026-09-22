@@ -69,6 +69,7 @@ object AlbumOps {
         val known = store.entries.toSet()
         val fresh = projectIds
             .filter { it.isNotBlank() }
+            .distinct()
             .map { AlbumEntry(albumId, it) }
             .filter { it !in known }
         if (fresh.isEmpty()) return store
@@ -150,7 +151,12 @@ object AlbumJson {
             val obj = item as? JsonVal.Obj ?: continue
             val id = obj.string("id")?.takeIf { it.isNotBlank() } ?: continue
             if (!seenAlbumIds.add(id)) continue
-            val name = AlbumOps.cleanName(obj.string("name"))
+            // Faithful decode: names were already cleaned at creation time.
+            // Cleaning here would break round-trip fidelity (and drop stored
+            // names); only cap length for safety.
+            val rawName = obj.string("name") ?: continue
+            if (rawName.isBlank()) continue
+            val name = rawName.take(AlbumLimits.MAX_NAME_LEN)
             if (name.isEmpty()) continue
             albums.add(Album(id, name, obj.long("createdAt") ?: 0L))
             if (albums.size >= AlbumLimits.MAX_ALBUMS) break
