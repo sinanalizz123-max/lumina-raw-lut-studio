@@ -334,6 +334,7 @@ object PanoramaMath {
         var bottom = height
         var left = 0
         var right = width
+        var anyValid = false
         for (x in 0 until width) {
             var first = -1
             var last = -1
@@ -343,7 +344,10 @@ object PanoramaMath {
                     last = y
                 }
             }
-            if (first < 0) return PixelRect(0, 0, width, height)
+            // Empty columns/rows cannot belong to the rect but must not veto
+            // the inset (panorama canvases legitimately have empty borders).
+            if (first < 0) continue
+            anyValid = true
             if (first > top) top = first
             if (last + 1 < bottom) bottom = last + 1
         }
@@ -356,10 +360,12 @@ object PanoramaMath {
                     last = x
                 }
             }
-            if (first < 0) return PixelRect(0, 0, width, height)
+            if (first < 0) continue
+            anyValid = true
             if (first > left) left = first
             if (last + 1 < right) right = last + 1
         }
+        if (!anyValid) return PixelRect(0, 0, width, height)
         if (right <= left || bottom <= top) return PixelRect(0, 0, width, height)
         return PixelRect(left, top, right, bottom)
     }

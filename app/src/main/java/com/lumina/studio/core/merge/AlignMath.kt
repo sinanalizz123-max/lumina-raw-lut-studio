@@ -160,6 +160,10 @@ object AlignMath {
      * Exhaustive integer-shift search. [checkCancel] runs per dy row (throw
      * to abort — CancellationException propagates untouched). Returns the
      * best shift even when weak; callers threshold via [checkConfidence].
+     *
+     * SIGN CONVENTION: the returned shift is the ALIGNING shift — applying
+     * it to `mov` via [applyShiftRgb] brings `mov` onto `ref`. It is the
+     * negation of the motion that created `mov` from `ref`.
      */
     fun estimateShift(
         ref: FloatArray,

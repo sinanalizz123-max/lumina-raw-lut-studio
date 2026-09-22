@@ -144,7 +144,10 @@ class M17MergeTest {
             AlignMath.applyShiftRgb(grayRgb(base), w, h, 5, -3), w, h
         )
         val s = AlignMath.estimateShift(base, moved, w, h, 8, 8)
-        assertTrue("dx=${s.dx} dy=${s.dy} score=${s.score}", abs(s.dx - 5) <= 1 && abs(s.dy + 3) <= 1)
+        // Convention: estimateShift returns the ALIGNING shift, i.e. what to
+        // apply to `moved` to bring it back onto `ref` (negation of the motion
+        // that created it). Callers use it directly in applyShiftRgb.
+        assertTrue("dx=${s.dx} dy=${s.dy} score=${s.score}", abs(s.dx + 5) <= 1 && abs(s.dy - 3) <= 1)
         assertTrue(s.score > MergeLimits.MIN_ALIGN_NCC)
         assertNull(AlignMath.checkConfidence(s.score))
     }
@@ -303,7 +306,8 @@ class M17MergeTest {
         assertNull(ExposureEv.validateSpread(ExposureEv.spreadF(evs)))
 
         val shift = AlignMath.estimateShift(lumaDark, lumaBright, w, h, 8, 8)
-        assertTrue(abs(shift.dx - 3) <= 1 && abs(shift.dy - 1) <= 1)
+        // Aligning convention (see test above): applied motion was (3, 1).
+        assertTrue(abs(shift.dx + 3) <= 1 && abs(shift.dy - 1) <= 1)
 
         val alignedBright = AlignMath.applyShiftRgb(brightShifted, w, h, shift.dx, shift.dy)
         val progress = ArrayList<Float>()
