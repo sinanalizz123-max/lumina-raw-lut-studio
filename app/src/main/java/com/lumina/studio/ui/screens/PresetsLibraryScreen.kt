@@ -196,14 +196,6 @@ fun PresetsLibraryScreen(
                         .weight(1f)
                         .heightIn(min = 48.dp)
                 ) { Text("Import .CUBE") }
-                OutlinedButton(
-                    onClick = {
-                        scope.launch { snackbar.showSnackbar("Preset packs arrive in Phase 3") }
-                    },
-                    modifier = Modifier
-                        .weight(1f)
-                        .heightIn(min = 48.dp)
-                ) { Text("Import pack") }
             }
             Row(
                 modifier = Modifier
@@ -329,7 +321,7 @@ fun PresetsLibraryScreen(
                 if (presets.isEmpty()) {
                     EmptyState(
                         title = "No presets installed",
-                        message = "Demo presets are loading. You can also import a .CUBE file.",
+                        message = "Import a .CUBE file to start.",
                         actionLabel = "Import .CUBE",
                         onAction = { cubePicker.launch(arrayOf("*/*")) },
                         illustration = EmptyStateIllustration.Palette

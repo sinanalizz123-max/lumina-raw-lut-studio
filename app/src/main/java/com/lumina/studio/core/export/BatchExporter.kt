@@ -33,9 +33,50 @@ object BatchExporter {
             )
             val includeLocation = runCatching { repo.exportIncludeLocation.first() }.getOrDefault(false)
             val preserveExif = runCatching { repo.exportIncludeMetadata.first() }.getOrDefault(true)
-            ExportSettings(colorSpace = coerced, includeLocation = includeLocation, preserveExif = preserveExif)
+            val format = runCatching { mapStoredFormat(repo.exportFormat.first()) }.getOrDefault(ExportFormat.JPEG)
+            val (preset, customQ) = runCatching { mapStoredQuality(repo.exportQuality.first()) }
+                .getOrDefault(QualityPreset.HIGH to 90)
+            val (mode, maxDim) = runCatching { mapStoredResolution(repo.exportResolution.first()) }
+                .getOrDefault(ResolutionMode.ORIGINAL to 2048)
+            ExportSettings(
+                format = format,
+                qualityPreset = preset,
+                customQuality = customQ,
+                resolutionMode = mode,
+                customMaxDim = maxDim,
+                colorSpace = coerced,
+                includeLocation = includeLocation,
+                preserveExif = preserveExif
+            )
         } catch (_: Exception) {
             ExportSettings()
+        }
+    }
+
+    private fun mapStoredFormat(stored: String): ExportFormat {
+        return when (stored.trim().lowercase(Locale.US)) {
+            "png" -> ExportFormat.PNG
+            "webp" -> ExportFormat.WEBP
+            "tiff", "tif" -> ExportFormat.TIFF
+            else -> ExportFormat.JPEG
+        }
+    }
+
+    private fun mapStoredQuality(stored: Int): Pair<QualityPreset, Int> {
+        val q = stored.coerceIn(1, 100)
+        return when (q) {
+            100 -> QualityPreset.MAXIMUM to 100
+            90 -> QualityPreset.HIGH to 90
+            else -> QualityPreset.CUSTOM to q
+        }
+    }
+
+    private fun mapStoredResolution(stored: String): Pair<ResolutionMode, Int> {
+        return when (stored.trim().lowercase(Locale.US)) {
+            "large" -> ResolutionMode.CUSTOM to 4096
+            "medium", "2048px", "2048" -> ResolutionMode.CUSTOM to 2048
+            "small" -> ResolutionMode.CUSTOM to 1024
+            else -> ResolutionMode.ORIGINAL to 2048
         }
     }
 

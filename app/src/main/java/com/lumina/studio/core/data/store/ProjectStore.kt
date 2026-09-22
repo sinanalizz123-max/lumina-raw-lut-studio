@@ -10,6 +10,8 @@ import java.util.UUID
 
 object ProjectStore {
 
+    const val MAX_IMPORT_BYTES = 200_000_000L
+
     data class ProjectPaths(
         val projectDir: File,
         val originalDir: File,
@@ -78,6 +80,10 @@ object ProjectStore {
                         if (n <= 0) break
                         output.write(buf, 0, n)
                         copied += n
+                        if (copied > MAX_IMPORT_BYTES) {
+                            runCatching { output.flush() }
+                            throw IllegalStateException("Import too large")
+                        }
                     }
                     output.flush()
                 }

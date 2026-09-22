@@ -50,13 +50,14 @@ fun BlurPanel(
         )
         HorizontalDivider(color = LuminaSurfaceContainerHigh)
         Text(
-            text = "Heuristic background blur from a focus point — not AI, no depth sensor is used. " +
-                "The sharp ellipse stays in focus; blur grows with distance.",
+            text = "Heuristic blur from a focus point — not AI, no depth sensor.",
             style = LuminaCaptionTextStyle,
             color = LuminaMuted
         )
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 48.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
@@ -99,7 +100,9 @@ fun BlurPanel(
             displayValue = "${(blur.focusRadius * 100f).roundToInt()}%"
         )
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 48.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
@@ -111,7 +114,7 @@ fun BlurPanel(
             Switch(checked = showDepth, onCheckedChange = onToggleDepth)
         }
         Text(
-            text = "Grayscale preview of the heuristic depth field (dark = focus, bright = blurred).",
+            text = "Depth preview: dark = focus, bright = blur.",
             style = LuminaCaptionTextStyle,
             color = LuminaMuted
         )

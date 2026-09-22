@@ -33,6 +33,8 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
@@ -225,6 +227,7 @@ fun CurvesPanel(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(160.dp)
+                .semantics { contentDescription = "Curve editor for ${selectedChannel.label}" }
                 .onSizeChanged { canvasSize = it }
                 .pointerInput(selectedChannel) {
                     awaitEachGesture {
@@ -454,13 +457,6 @@ fun CurvesPanel(
                 },
                 modifier = Modifier.heightIn(min = 48.dp)
             ) { Text("Apply") }
-        }
-        if (selectedPoint == null) {
-            Text(
-                text = "Touch the line and move it.",
-                style = LuminaCaptionTextStyle,
-                color = LuminaMuted
-            )
         }
         Text(
             text = "Touch line to bend • tap adds • hold removes.",

@@ -157,8 +157,7 @@ fun MaskPanel(
         // M12 heuristic select: result becomes a mask row (cached per
         // project, reused on reopen). Copy says "heuristic", never "AI".
         Text(
-            text = "Heuristic select (not AI) — runs offline on this device. " +
-                "The result becomes a mask row you can refine.",
+            text = "Heuristic select (not AI) — runs offline. Result becomes a mask row.",
             style = LuminaCaptionTextStyle,
             color = LuminaMuted
         )
@@ -285,7 +284,9 @@ fun MaskPanel(
             }
         }
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 48.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
@@ -462,11 +463,9 @@ fun MaskPanel(
                     // refine = add a Brush Subtract mask on top (existing ops).
                     Text(
                         text = if (mask.tool == MaskTool.AI_SUBJECT)
-                            "Heuristic subject guess (central and colorful, not AI). " +
-                                "Refine with Feather/Opacity, or add a Brush Subtract mask on top."
+                            "Heuristic subject guess — refine with Feather or a Brush Subtract mask."
                         else
-                            "Heuristic sky guess (blue and bright, not AI). " +
-                                "Refine with Feather/Opacity, or add a Brush Subtract mask on top.",
+                            "Heuristic sky guess — refine with Feather or a Brush Subtract mask.",
                         style = LuminaCaptionTextStyle,
                         color = LuminaMuted
                     )
@@ -494,7 +493,7 @@ fun MaskPanel(
                 displayValue = if (mask.blur <= 0.05f) "Off" else "${mask.blur.roundToInt()}"
             )
             Text(
-                text = "Blur softens the alpha field (cheap box approx).",
+                text = "Blur softens the mask edge.",
                 style = LuminaCaptionTextStyle,
                 color = LuminaMuted
             )
@@ -506,13 +505,14 @@ fun MaskPanel(
                 displayValue = "${(mask.opacity * 100f).roundToInt()}%"
             )
             Text(
-                // Density is an alias of opacity: keep one control on purpose.
-                text = "Opacity doubles as Density (no duplicate control).",
+                text = "Opacity acts as Density.",
                 style = LuminaCaptionTextStyle,
                 color = LuminaMuted
             )
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 48.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
@@ -552,7 +552,7 @@ fun MaskPanel(
                 displayValue = formatMaskTemp(mask.clarity)
             )
             Text(
-                text = "Local saturation + clarity use the same approximations as the global stages.",
+                text = "Same rendering as the global stages.",
                 style = LuminaCaptionTextStyle,
                 color = LuminaMuted
             )

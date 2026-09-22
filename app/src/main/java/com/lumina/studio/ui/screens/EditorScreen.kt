@@ -198,6 +198,7 @@ fun EditorScreen(navController: NavController, projectId: String? = null) {
     // (EditorViewModel.setPerformanceFlags), animations gates editor tool transitions.
     val gpuSetting by settingsRepo.gpuAcceleration.collectAsState(initial = true)
     val previewQualitySetting by settingsRepo.previewQuality.collectAsState(initial = "High")
+    val rawQualitySetting by settingsRepo.rawQuality.collectAsState(initial = "High")
     val animationsEnabled by settingsRepo.animationsEnabled.collectAsState(initial = true)
     val largeDecoding by vm.largeDecoding.collectAsState()
     val loadCancelled by vm.loadCancelled.collectAsState()
@@ -237,6 +238,10 @@ fun EditorScreen(navController: NavController, projectId: String? = null) {
             gpuSetting,
             PreviewRenderer.effectivePreviewMaxDim(previewQualitySetting, gpuSetting)
         )
+    }
+
+    LaunchedEffect(rawQualitySetting) {
+        vm.setRawQuality(rawQualitySetting)
     }
 
     val viewportBitmap = if (fullscreen) fullscreenPreview ?: preview else preview

@@ -264,6 +264,7 @@ class EditorViewModel(application: Application, private val projectId: String?) 
     // Medium 1200 / Low 800). Loaded from SettingsRepository in load(), refreshable live.
     private var gpuEnabled = true
     private var previewMaxDim = PreviewRenderer.MAX_PREVIEW_DIM
+    private var useFullDevelop = true
     private val previewGenerations = GenerationTracker()
     private val fullscreenGenerations = GenerationTracker()
 
@@ -303,6 +304,13 @@ class EditorViewModel(application: Application, private val projectId: String?) 
         previewMaxDim = maxDim.coerceAtLeast(1)
     }
 
+    fun setRawQuality(quality: String) {
+        val full = quality.trim().equals("High", ignoreCase = true)
+        if (useFullDevelop == full) return
+        useFullDevelop = full
+        if (_isDevelopedRaw.value) redevelopRaw()
+    }
+
     fun cancelLoad() {
         loadJob?.cancel()
     }
@@ -336,6 +344,7 @@ class EditorViewModel(application: Application, private val projectId: String?) 
                     val flags = withContext(Dispatchers.IO) { readPerformanceFlags() }
                     gpuEnabled = flags.first
                     previewMaxDim = flags.second
+                    useFullDevelop = withContext(Dispatchers.IO) { readRawDevelopFlag() }
                     _isDevelopedRaw.value = false
                     _rawRecipe.value = com.lumina.studio.core.render.RawRecipe()
                     baseBitmap = withContext(Dispatchers.IO) { decodeBase(loaded.photoUri, previewMaxDim) }
@@ -348,6 +357,7 @@ class EditorViewModel(application: Application, private val projectId: String?) 
                 renderPreview()
                 _loading.value = false
             } catch (e: Exception) {
+                Log.w("EditorViewModel", "project load failed: ${e.message}")
                 _largeDecoding.value = false
                 _loading.value = false
                 if (e is CancellationException) {
@@ -364,8 +374,19 @@ class EditorViewModel(application: Application, private val projectId: String?) 
             val gpu = repo.gpuAcceleration.first()
             val quality = repo.previewQuality.first()
             gpu to PreviewRenderer.effectivePreviewMaxDim(quality, gpu)
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.w("EditorViewModel", "performance flags unreadable, using defaults")
             true to PreviewRenderer.MAX_PREVIEW_DIM
+        }
+    }
+
+    private suspend fun readRawDevelopFlag(): Boolean {
+        return try {
+            val repo = SettingsRepository(getApplication())
+            repo.rawQuality.first().trim().equals("High", ignoreCase = true)
+        } catch (e: Exception) {
+            Log.w("EditorViewModel", "RAW quality unreadable, assuming High")
+            true
         }
     }
 
@@ -477,7 +498,7 @@ class EditorViewModel(application: Application, private val projectId: String?) 
 
     private fun decodeFull(pathOrUri: String): Bitmap? {
         return try {
-            if (isDngPath(pathOrUri)) {
+            if (useFullDevelop && isDngPath(pathOrUri)) {
                 val developed = try {
                     RenderBackends.raw(getApplication()).develop(
                         RenderSource.of(pathOrUri), 0, _rawRecipe.value
@@ -510,7 +531,7 @@ class EditorViewModel(application: Application, private val projectId: String?) 
 
     private fun decodeBase(pathOrUri: String, maxDim: Int = previewMaxDim): Bitmap? {
         return try {
-            if (isDngPath(pathOrUri)) {
+            if (useFullDevelop && isDngPath(pathOrUri)) {
                 val developed = try {
                     RenderBackends.raw(getApplication()).develop(
                         RenderSource.of(pathOrUri), maxDim, _rawRecipe.value
@@ -1929,9 +1950,11 @@ class EditorViewModel(application: Application, private val projectId: String?) 
             val base = baseBitmap ?: return@launch
             val params = _params.value
             val lut = LutRegistry.resolve(params.presetId)
+            val renderStart = SystemClock.elapsedRealtime()
             val out = gradeThroughBackend(
                 base, params, lut, RenderTarget.Preview(previewMaxDim), generation
             )
+            val renderMs = SystemClock.elapsedRealtime() - renderStart
             // §53: Job.cancel cannot preempt blocking Bitmap work, so a
             // superseded render may still finish. Stale results must never
             // overwrite the current preview.
@@ -1942,6 +1965,13 @@ class EditorViewModel(application: Application, private val projectId: String?) 
                 return@launch
             }
             _preview.value = out
+            runCatching {
+                val frame = out ?: base
+                val dims = if (frame != null) "${frame.width}×${frame.height}" else "—"
+                com.lumina.studio.core.util.DebugDiagnostics.reportRender(
+                    "CpuRenderBackend", appDecoder().name, renderMs, dims, _paramsRevision.value
+                )
+            }
             // Phase 4B: histogram auto-recompute on every render runs only with GPU
             // acceleration ON. When OFF, the histogram updates solely via explicit
             // requestHistogram()/toggleHistogram() calls.
@@ -2322,6 +2352,11 @@ class EditorViewModel(application: Application, private val projectId: String?) 
         }
         _zoomWarning.value = null
         _zoomEnhancing.value = false
+        runCatching {
+            com.lumina.studio.core.util.DebugDiagnostics.reportZoom(
+                "${rendered.width}×${rendered.height} rev=$revision ${decodeMs + renderMs}ms"
+            )
+        }
     }
 
     private fun ensureRegionDecoder(source: String): BitmapRegionDecoder? {

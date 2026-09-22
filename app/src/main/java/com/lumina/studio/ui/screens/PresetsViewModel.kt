@@ -3,6 +3,7 @@ package com.lumina.studio.ui.screens
 import android.app.Application
 import android.graphics.Bitmap
 import android.net.Uri
+import android.util.Log
 import androidx.core.net.toUri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -157,14 +158,19 @@ class PresetsViewModel(application: Application) : AndroidViewModel(application)
             val cap = maxChars.coerceIn(1024, LutLimits.MAX_FILE_BYTES)
             try {
                 resolver.openFileDescriptor(uri, "r")?.use { fd ->
-                    if (fd.statSize > cap) return null
+                    if (fd.statSize > cap) {
+                        Log.w("PresetsViewModel", "cube import rejected: statSize over cap")
+                        return null
+                    }
                 }
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                Log.w("PresetsViewModel", "cube statSize unreadable: ${e.message}")
             }
             resolver.openInputStream(uri)?.use { input ->
                 LutLimits.readBounded(input, cap)?.toString(Charsets.UTF_8)
             }
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.w("PresetsViewModel", "cube read failed: ${e.message}")
             null
         }
     }

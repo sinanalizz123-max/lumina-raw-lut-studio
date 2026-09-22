@@ -208,7 +208,7 @@ private fun HistoryContent(
             color = LuminaOnSurface
         )
         Text(
-            text = "Tap a row to jump to its tool. Toggle to enable/disable a step (render skips disabled steps). Swipe left to reset a group. Changes auto-save via debounce persist (~300ms).",
+            text = "Tap a row to jump to its tool. Toggle steps on/off; swipe to reset.",
             style = LuminaCaptionTextStyle,
             color = LuminaMuted
         )
@@ -231,7 +231,7 @@ private fun HistoryContent(
             ) { Text("Paste settings") }
         }
         Text(
-            text = "Copy saves every group; paste skips masks unless they were included when copying.",
+            text = "Paste skips masks unless included when copying.",
             style = LuminaCaptionTextStyle,
             color = LuminaMuted
         )

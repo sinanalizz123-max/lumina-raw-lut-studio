@@ -81,7 +81,7 @@ fun CropPanel(
             }
         }
         Text(
-            text = "Crop applies to the preview and the export. The frame shows the kept area.",
+            text = "Frame shows the kept area.",
             style = LuminaCaptionTextStyle,
             color = LuminaMuted
         )
@@ -184,8 +184,7 @@ fun CropPanel(
             onReset = { onPerspectiveH(0f) }
         )
         Text(
-            text = "Projective warp before the crop cut (Matrix.setPolyToPoly approx). " +
-                "Order: rotate → straighten → flip → perspective → crop cut.",
+            text = "Order: rotate → straighten → flip → perspective → crop.",
             style = LuminaCaptionTextStyle,
             color = LuminaMuted
         )
@@ -224,8 +223,7 @@ fun CropPanel(
             onReset = { onDistortion(0f) }
         )
         Text(
-            text = "Inverse-vignette gain from corners, radial red/blue shift, " +
-                "inverse radial remap. All early-out at 0.",
+            text = "All off at 0.",
             style = LuminaCaptionTextStyle,
             color = LuminaMuted
         )

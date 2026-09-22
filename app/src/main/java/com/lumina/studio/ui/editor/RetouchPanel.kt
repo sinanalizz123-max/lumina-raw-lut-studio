@@ -97,15 +97,17 @@ fun RetouchPanel(
         }
         Text(
             text = when (mode) {
-                RetouchKind.HEAL -> "Heal blends the spot with surrounding colors (local approx, best on smooth areas)."
-                RetouchKind.CLONE -> "Clone copies from a picked source disc with a feathered edge."
-                RetouchKind.ERASE -> "Eraser (beta) fills from nearby pixels; best on small spots over smooth backgrounds."
+                RetouchKind.HEAL -> "Heal blends with nearby colors. Best on smooth areas."
+                RetouchKind.CLONE -> "Clone copies from a picked source with a feathered edge."
+                RetouchKind.ERASE -> "Eraser (beta) fills from nearby pixels; best on small spots."
             },
             style = LuminaCaptionTextStyle,
             color = LuminaMuted
         )
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 48.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
@@ -120,8 +122,7 @@ fun RetouchPanel(
             text = if (params.retouch.size >= RetouchOp.MAX_OPS)
                 "Limit reached (${params.retouch.size}/${RetouchOp.MAX_OPS}) — delete a spot to add another."
             else
-                "Tap the photo to drop a ${mode.label.lowercase()} spot, then drag it via Center below. " +
-                    "Each placement is its own undo step.",
+                "Tap the photo to drop a ${mode.label.lowercase()} spot, then drag it below.",
             style = LuminaCaptionTextStyle,
             color = LuminaMuted
         )
@@ -197,7 +198,7 @@ fun RetouchPanel(
                 displayValue = "${(op.cy * 100f).roundToInt()}%"
             )
             Text(
-                text = "Drag the spot on the photo to move it (one undo step per drag).",
+                text = "Drag the spot on the photo to move it.",
                 style = LuminaCaptionTextStyle,
                 color = LuminaMuted
             )
@@ -243,7 +244,7 @@ fun RetouchPanel(
             color = LuminaOnSurface
         )
         Text(
-            text = "Heuristic scan for dark dots on smooth bright areas. Review each candidate — only confirmed ones become heal spots.",
+            text = "Heuristic scan for dark dots. Only confirmed ones become heal spots.",
             style = LuminaCaptionTextStyle,
             color = LuminaMuted
         )

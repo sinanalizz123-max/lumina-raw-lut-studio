@@ -73,7 +73,7 @@ fun AdjustPanel(
                 color = LuminaOnSurface
             )
             Text(
-                text = "Applied in linear light at develop time (exposure gain pre-gamma, WB gains from shot neutral) — not a post-filter.",
+                text = "Developed in linear light — not a filter.",
                 style = LuminaCaptionTextStyle,
                 color = LuminaMuted
             )

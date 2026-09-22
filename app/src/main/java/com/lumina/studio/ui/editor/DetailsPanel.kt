@@ -115,7 +115,7 @@ fun DetailsPanel(
         HorizontalDivider(color = LuminaSurfaceContainerHigh)
         ExpandableSection(
             title = "Sharpening",
-            subtitle = "Preview shows a soft approximation; full detail on export.",
+            subtitle = "Preview is approximate; full detail on export.",
             expanded = sharpenExpanded,
             onToggle = { sharpenExpanded = !sharpenExpanded }
         ) {

@@ -303,7 +303,7 @@ fun PresetsToolPanel(
         if (presets.isEmpty()) {
             EmptyState(
                 title = "No presets yet",
-                message = "Demo presets are loading, or import a .CUBE from the library.",
+                message = "Import a .CUBE file from the library.",
                 illustration = EmptyStateIllustration.Palette
             )
             return@Column

@@ -126,6 +126,7 @@ object Exporter {
     const val WEBP_LOSSLESS_QUALITY = 100
     const val RELATIVE_DIR = "Pictures/Lumina"
     const val RELATIVE_DOWNLOAD_DIR = "Download/Lumina"
+    const val MAX_RAW_READ_BYTES = 150_000_000L
 
     fun targetDimensions(srcW: Int, srcH: Int, settings: ExportSettings): Pair<Int, Int> {
         if (srcW <= 0 || srcH <= 0) return 0 to 0
@@ -937,10 +938,32 @@ object Exporter {
         return try {
             val file = File(sourcePath)
             if (file.exists()) {
+                val len = runCatching { file.length() }.getOrDefault(-1L)
+                if (len <= 0L || len > MAX_RAW_READ_BYTES) return null
                 file.readBytes()
             } else {
-                context.contentResolver.openInputStream(sourcePath.toUri())?.use { it.readBytes() }
+                context.contentResolver.openInputStream(sourcePath.toUri())?.use { input ->
+                    readCapped(input, MAX_RAW_READ_BYTES)
+                }
             }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun readCapped(input: java.io.InputStream, cap: Long): ByteArray? {
+        return try {
+            val out = java.io.ByteArrayOutputStream()
+            val buf = ByteArray(32768)
+            var total = 0L
+            while (true) {
+                val n = input.read(buf)
+                if (n <= 0) break
+                total += n
+                if (total > cap) return null
+                out.write(buf, 0, n)
+            }
+            out.toByteArray()
         } catch (_: Exception) {
             null
         }

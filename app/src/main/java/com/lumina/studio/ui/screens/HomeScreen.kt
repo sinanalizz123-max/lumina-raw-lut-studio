@@ -86,10 +86,6 @@ import java.io.File
 import java.util.Locale
 import java.util.UUID
 
-val HomePresetPacks = listOf(
-    "Cinematic", "Film", "Portrait", "Moody", "Travel", "Nature", "B&W", "Vintage"
-)
-
 @Composable
 fun LuminaLogoMark(modifier: Modifier = Modifier) {
     Canvas(modifier = modifier.size(32.dp)) {
@@ -366,100 +362,13 @@ fun HomeScreen(navController: NavController, homeViewModel: HomeViewModel = view
                 style = LuminaSectionHeaderTextStyle,
                 color = LuminaOnSurface
             )
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                HomePresetPacks.chunked(2).forEach { row ->
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        row.forEach { pack ->
-                            val packShape = RoundedCornerShape(16.dp)
-                            Card(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .heightIn(min = 48.dp)
-                                    .clickable {
-                                        scope.launch {
-                                            snackbarHostState.showSnackbar("$pack coming in Phase 2")
-                                        }
-                                    },
-                                shape = packShape,
-                                colors = CardDefaults.cardColors(
-                                    containerColor = LuminaSurfaceContainerLow
-                                )
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(16.dp),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Text(
-                                        pack,
-                                        style = LuminaSectionHeaderTextStyle,
-                                        color = LuminaOnSurface
-                                    )
-                                }
-                            }
-                        }
-                        if (row.size == 1) Spacer(modifier = Modifier.weight(1f))
-                    }
-                }
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    Card(
-                        modifier = Modifier
-                            .weight(1f)
-                            .heightIn(min = 48.dp)
-                            .clickable {
-                                scope.launch { snackbarHostState.showSnackbar("Import .CUBE coming in Phase 2") }
-                            },
-                        shape = RoundedCornerShape(16.dp),
-                        colors = CardDefaults.cardColors(
-                            containerColor = LuminaSurfaceContainerLow
-                        )
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(16.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                "Import .CUBE",
-                                style = LuminaSectionHeaderTextStyle,
-                                color = LuminaOnSurface
-                            )
-                        }
-                    }
-                    Card(
-                        modifier = Modifier
-                            .weight(1f)
-                            .heightIn(min = 48.dp)
-                            .clickable {
-                                scope.launch { snackbarHostState.showSnackbar("Import Pack coming in Phase 2") }
-                            },
-                        shape = RoundedCornerShape(16.dp),
-                        colors = CardDefaults.cardColors(
-                            containerColor = LuminaSurfaceContainerLow
-                        )
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(16.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                "Import Pack",
-                                style = LuminaSectionHeaderTextStyle,
-                                color = LuminaOnSurface
-                            )
-                        }
-                    }
-                }
+            OutlinedButton(
+                onClick = { navController.navigate(Routes.PRESETS) },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 48.dp)
+            ) {
+                Text("Open preset library")
             }
             Spacer(modifier = Modifier.height(8.dp))
         }

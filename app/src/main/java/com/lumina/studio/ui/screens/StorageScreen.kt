@@ -39,7 +39,6 @@ fun StorageScreen(navController: NavController, settingsViewModel: SettingsViewM
     val cacheSize by settingsViewModel.cacheSize.collectAsState()
     val originalsSize by settingsViewModel.originalsSize.collectAsState()
     val cacheMessage by settingsViewModel.cacheMessage.collectAsState()
-    val previewQuality by settingsViewModel.previewQuality.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
 
     LaunchedEffect(Unit) { settingsViewModel.refreshCacheSize() }
@@ -87,8 +86,7 @@ fun StorageScreen(navController: NavController, settingsViewModel: SettingsViewM
                     }
                 }
                 Text(
-                    "Clearing the cache frees about $cacheSize of temporary files. " +
-                        "Originals are never deleted.",
+                    "Frees temporary files. Originals are kept.",
                     style = LuminaCaptionTextStyle,
                     color = LuminaMuted
                 )
@@ -96,17 +94,9 @@ fun StorageScreen(navController: NavController, settingsViewModel: SettingsViewM
             SettingsSection(title = "Originals") {
                 Text("Originals: $originalsSize")
                 Text(
-                    "Original photos are stored safely and are kept when clearing the cache.",
+                    "Originals are kept when clearing the cache.",
                     style = LuminaCaptionTextStyle,
                     color = LuminaMuted
-                )
-            }
-            SettingsSection(title = "Preview") {
-                SettingsChoiceRow(
-                    title = "Preview quality",
-                    options = listOf("Low", "Medium", "High"),
-                    selected = previewQuality,
-                    onSelect = { settingsViewModel.setPreviewQuality(it) }
                 )
             }
         }

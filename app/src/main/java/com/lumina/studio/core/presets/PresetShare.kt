@@ -26,6 +26,7 @@ object PresetShare {
         return try {
             val file = recipeFileFor(lutsDir, presetId)
             if (!file.isFile) return null
+            if (runCatching { file.length() }.getOrDefault(-1L).let { it <= 0L || it > 512 * 1024 }) return null
             val text = file.readText(Charsets.UTF_8)
             if (text.isBlank()) return null
             EditParamsJson.decode(text)

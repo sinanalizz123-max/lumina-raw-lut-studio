@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.Intent
 import android.graphics.Bitmap
 import android.net.Uri
+import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
@@ -181,7 +182,8 @@ fun ExportScreen(navController: NavController, projectId: String? = null) {
                     context.contentResolver.openInputStream(uri)?.use { input ->
                         LutLimits.readBounded(input)?.toString(Charsets.UTF_8)
                     }
-                } catch (_: Exception) {
+                } catch (e: Exception) {
+                    Log.w("ExportScreen", "sidecar read failed: ${e.message}")
                     null
                 }
             }
@@ -227,7 +229,31 @@ fun ExportScreen(navController: NavController, projectId: String? = null) {
             } catch (_: Exception) {
                 true
             }
-            settings = settings.copy(colorSpace = coerced, includeLocation = includeLocation, preserveExif = preserveExif)
+            val format = try {
+                mapStoredFormat(settingsRepository.exportFormat.first())
+            } catch (_: Exception) {
+                ExportFormat.JPEG
+            }
+            val (preset, customQ) = try {
+                mapStoredQuality(settingsRepository.exportQuality.first())
+            } catch (_: Exception) {
+                QualityPreset.HIGH to 90
+            }
+            val (mode, maxDim) = try {
+                mapStoredResolution(settingsRepository.exportResolution.first())
+            } catch (_: Exception) {
+                ResolutionMode.ORIGINAL to 2048
+            }
+            settings = settings.copy(
+                colorSpace = coerced,
+                includeLocation = includeLocation,
+                preserveExif = preserveExif,
+                format = format,
+                qualityPreset = preset,
+                customQuality = customQ,
+                resolutionMode = mode,
+                customMaxDim = maxDim
+            )
         } catch (_: Exception) {
         }
     }
@@ -827,7 +853,7 @@ fun ExportScreen(navController: NavController, projectId: String? = null) {
                         else settings.outputSharpen.toString()
                     )
                     Text(
-                        "Small-radius unsharp applied once at export size, before encoding. Off at 0.",
+                        "Applied once at export size. Off at 0.",
                         style = LuminaCaptionTextStyle,
                         color = LuminaMuted
                     )
@@ -1163,5 +1189,32 @@ private fun ResolutionRow(
     ) {
         RadioButton(selected = selected, onClick = null)
         Text(text = label, modifier = Modifier.padding(start = 8.dp))
+    }
+}
+
+private fun mapStoredFormat(stored: String): ExportFormat {
+    return when (stored.trim().lowercase(java.util.Locale.US)) {
+        "png" -> ExportFormat.PNG
+        "webp" -> ExportFormat.WEBP
+        "tiff", "tif" -> ExportFormat.TIFF
+        else -> ExportFormat.JPEG
+    }
+}
+
+private fun mapStoredQuality(stored: Int): Pair<QualityPreset, Int> {
+    val q = stored.coerceIn(1, 100)
+    return when (q) {
+        100 -> QualityPreset.MAXIMUM to 100
+        90 -> QualityPreset.HIGH to 90
+        else -> QualityPreset.CUSTOM to q
+    }
+}
+
+private fun mapStoredResolution(stored: String): Pair<ResolutionMode, Int> {
+    return when (stored.trim().lowercase(java.util.Locale.US)) {
+        "large" -> ResolutionMode.CUSTOM to 4096
+        "medium", "2048px", "2048" -> ResolutionMode.CUSTOM to 2048
+        "small" -> ResolutionMode.CUSTOM to 1024
+        else -> ResolutionMode.ORIGINAL to 2048
     }
 }

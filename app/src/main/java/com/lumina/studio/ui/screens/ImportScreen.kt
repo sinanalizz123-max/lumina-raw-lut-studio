@@ -124,7 +124,7 @@ fun ImportScreen(navController: NavController, importViewModel: ImportViewModel 
             val consumed = IncomingImages.consume() ?: return@collect
             importViewModel.importUri(consumed.primary)
             if (consumed.total > 1) {
-                runCatching { snackbarHostState.showSnackbar("Only the first image was imported — batch import lands later") }
+                runCatching { snackbarHostState.showSnackbar("Only the first image was imported") }
             }
         }
     }

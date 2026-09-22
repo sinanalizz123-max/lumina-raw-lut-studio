@@ -39,9 +39,24 @@ class CacheFileManager(private val context: Context) {
             val ext = extensionFromName(displayName)
             val name = "lumina_${UUID.randomUUID()}" + (if (ext.isNotEmpty()) ".$ext" else "")
             val dest = File(context.cacheDir, name)
+            var copied = 0L
             context.contentResolver.openInputStream(uri)?.use { input ->
-                dest.outputStream().use { output -> input.copyTo(output) }
+                dest.outputStream().use { output ->
+                    val buf = ByteArray(128 * 1024)
+                    while (true) {
+                        val n = input.read(buf)
+                        if (n <= 0) break
+                        output.write(buf, 0, n)
+                        copied += n
+                        if (copied > MAX_CACHE_BYTES) throw IllegalStateException("Cache copy too large")
+                    }
+                    output.flush()
+                }
             } ?: return null
+            if (copied <= 0L) {
+                dest.delete()
+                return null
+            }
             dest
         } catch (_: Exception) {
             null
@@ -74,6 +89,11 @@ class CacheFileManager(private val context: Context) {
         if (name.isNullOrBlank()) return ""
         val dot = name.lastIndexOf('.')
         if (dot < 0 || dot == name.length - 1) return ""
-        return name.substring(dot + 1).lowercase(Locale.US).trim()
+        return name.substring(dot + 1).lowercase(Locale.US)
+            .filter { it.isLetterOrDigit() }.take(8)
+    }
+
+    companion object {
+        const val MAX_CACHE_BYTES = 200_000_000L
     }
 }

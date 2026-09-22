@@ -35,6 +35,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.lumina.studio.core.design.theme.LuminaAmber
 import com.lumina.studio.core.design.theme.LuminaMotion
@@ -164,6 +166,7 @@ fun ProSlider(
             modifier = Modifier
                 .fillMaxWidth()
                 .heightIn(min = 48.dp)
+                .semantics { contentDescription = "$label: $displayValue" }
         )
         if (showTicks) {
             Row(
@@ -178,7 +181,7 @@ fun ProSlider(
                         modifier = Modifier
                             .size(4.dp)
                             .clip(CircleShape)
-                            .background(LuminaMuted.copy(alpha = 0.5f))
+                            .background(LuminaMuted.copy(alpha = 0.7f))
                     )
                 }
             }

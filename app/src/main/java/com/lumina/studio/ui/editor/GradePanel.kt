@@ -31,6 +31,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.lumina.studio.core.design.components.CategoryChip
@@ -155,6 +157,7 @@ fun GradePanel(
             Canvas(
                 modifier = Modifier
                     .size(200.dp)
+                    .semantics { contentDescription = "Grade color wheel for ${selected.label}" }
                     .pointerInput(selected) {
                         awaitEachGesture {
                             val down = awaitFirstDown(requireUnconsumed = false)

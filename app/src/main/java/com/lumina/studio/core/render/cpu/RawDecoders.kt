@@ -42,7 +42,7 @@ class DngPreviewDecoder(private val appContext: Context) : RawDecoder<Bitmap> {
         val exif = openExif(source) ?: return null
         if (!runCatching { exif.hasThumbnail() }.getOrDefault(false)) return null
         val bytes = runCatching { exif.thumbnailBytes }.getOrNull() ?: return null
-        if (bytes.isEmpty()) return null
+        if (bytes.isEmpty() || bytes.size > 20 * 1024 * 1024) return null
         val thumb = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return null
         val scaled = fitWithin(thumb, maxDim)
         val path = (source as? RenderSource.File)?.path

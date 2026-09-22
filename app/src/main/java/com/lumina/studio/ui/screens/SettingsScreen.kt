@@ -9,7 +9,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -19,7 +18,6 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -27,11 +25,9 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -60,20 +56,8 @@ fun SettingsScreen(navController: NavController, settingsViewModel: SettingsView
     val exportColorSpace by settingsViewModel.exportColorSpace.collectAsState()
     val includeMetadata by settingsViewModel.exportIncludeMetadata.collectAsState()
     val includeLocation by settingsViewModel.exportIncludeLocation.collectAsState()
-    val libraryPath by settingsViewModel.presetLibraryPath.collectAsState()
     val aiBackend by settingsViewModel.aiBackend.collectAsState()
-    val cacheSize by settingsViewModel.cacheSize.collectAsState()
-    val cacheMessage by settingsViewModel.cacheMessage.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
-    val scope = rememberCoroutineScope()
-
-    LaunchedEffect(Unit) { settingsViewModel.refreshCacheSize() }
-    LaunchedEffect(cacheMessage) {
-        if (cacheMessage != null) {
-            snackbarHostState.showSnackbar(cacheMessage!!)
-            settingsViewModel.consumeCacheMessage()
-        }
-    }
 
     Scaffold(
         topBar = { TopAppBar(title = { Text("Settings") }) },
@@ -89,20 +73,25 @@ fun SettingsScreen(navController: NavController, settingsViewModel: SettingsView
         ) {
             SettingsSection(title = "Editing") {
                 SettingsSwitchRow(
-                    title = "GPU acceleration",
+                    title = "Preview performance mode",
                     checked = gpu,
                     onCheckedChange = { settingsViewModel.setGpuAcceleration(it) }
                 )
                 Text(
-                    "Off caps previews at 1200px and skips auto-histogram.",
+                    "On: full preview + auto-histogram. Off: 1200px cap, manual histogram.",
                     style = LuminaCaptionTextStyle,
                     color = LuminaMuted
                 )
                 SettingsChoiceRow(
-                    title = "RAW preview quality",
+                    title = "RAW develop quality",
                     options = listOf("Low", "Medium", "High"),
                     selected = rawQuality,
                     onSelect = { settingsViewModel.setRawQuality(it) }
+                )
+                Text(
+                    "High develops sensor data; otherwise embedded preview.",
+                    style = LuminaCaptionTextStyle,
+                    color = LuminaMuted
                 )
                 SettingsChoiceRow(
                     title = "Preview quality",
@@ -111,38 +100,12 @@ fun SettingsScreen(navController: NavController, settingsViewModel: SettingsView
                     onSelect = { settingsViewModel.setPreviewQuality(it) }
                 )
                 Text(
-                    "Preview decode size: High 1600 • Medium 1200 • Low 800 px.",
-                    style = LuminaCaptionTextStyle,
-                    color = LuminaMuted
-                )
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(min = 48.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        "Cache: $cacheSize",
-                        modifier = Modifier.weight(1f),
-                        style = LuminaCaptionTextStyle,
-                        color = LuminaMuted
-                    )
-                    OutlinedButton(
-                        onClick = { settingsViewModel.clearCache() },
-                        modifier = Modifier.heightIn(min = 48.dp)
-                    ) {
-                        Text("Clear cache")
-                    }
-                }
-                Text(
-                    "Clearing the cache only removes temporary files. " +
-                        "Originals are never deleted.",
+                    "High 1600 • Medium 1200 • Low 800 px. Cache lives under Storage.",
                     style = LuminaCaptionTextStyle,
                     color = LuminaMuted
                 )
             }
 
-            // M12: selection backend status. Copy says "heuristic", never "AI".
             SettingsSection(title = "Selection") {
                 Text(
                     "Backend: ${AiResearch.BACKEND_NAME} ($aiBackend)",
@@ -150,17 +113,7 @@ fun SettingsScreen(navController: NavController, settingsViewModel: SettingsView
                     color = LuminaOnSurface
                 )
                 Text(
-                    "Status: ${AiResearch.BACKEND_STATUS}",
-                    style = LuminaCaptionTextStyle,
-                    color = LuminaMuted
-                )
-                Text(
-                    "Model size: ${AiResearch.MODEL_SIZE_NOTE}",
-                    style = LuminaCaptionTextStyle,
-                    color = LuminaMuted
-                )
-                Text(
-                    AiResearch.OFFLINE_NOTE,
+                    "Heuristic on-device — 0 MB, no download. Approximations; refine with Feather.",
                     style = LuminaCaptionTextStyle,
                     color = LuminaMuted
                 )
@@ -219,39 +172,13 @@ fun SettingsScreen(navController: NavController, settingsViewModel: SettingsView
             }
 
             SettingsSection(title = "Presets") {
-                OutlinedTextField(
-                    value = libraryPath,
-                    onValueChange = { settingsViewModel.setPresetLibraryPath(it) },
-                    label = { Text("Library path") },
+                OutlinedButton(
+                    onClick = { navController.navigate(Routes.PRESETS) },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(min = 48.dp),
-                    singleLine = true
-                )
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        .heightIn(min = 48.dp)
                 ) {
-                    OutlinedButton(
-                        onClick = {
-                            scope.launch { snackbarHostState.showSnackbar("Import .CUBE coming in Phase 2") }
-                        },
-                        modifier = Modifier
-                            .weight(1f)
-                            .heightIn(min = 48.dp)
-                    ) {
-                        Text("Import .CUBE")
-                    }
-                    OutlinedButton(
-                        onClick = {
-                            scope.launch { snackbarHostState.showSnackbar("Manage packs coming in Phase 2") }
-                        },
-                        modifier = Modifier
-                            .weight(1f)
-                            .heightIn(min = 48.dp)
-                    ) {
-                        Text("Manage packs")
-                    }
+                    Text("Open preset library")
                 }
             }
 
@@ -354,6 +281,5 @@ fun SettingsChoiceRow(
                 )
             }
         }
-        Spacer(modifier = Modifier.width(0.dp))
     }
 }
