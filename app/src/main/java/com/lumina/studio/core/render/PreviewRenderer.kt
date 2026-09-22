@@ -1999,20 +1999,28 @@ object PreviewRenderer {
             val w = src.width
             val h = src.height
             if (w <= 0 || h <= 0) return out
-            val total = w * h
-            val step = maxOf(1, total / HISTOGRAM_SAMPLE_CAP)
-            val pixels = IntArray(total)
-            src.getPixels(pixels, 0, w, 0, 0, w, h)
-            var i = 0
-            while (i < total) {
-            val pixel = pixels[i]
-            val r = (pixel shr 16) and 0xFF
-            val g = (pixel shr 8) and 0xFF
-            val b = pixel and 0xFF
-            out[0][(r * bins) ushr 8]++
-            out[1][(g * bins) ushr 8]++
-            out[2][(b * bins) ushr 8]++
-            i += step
+            val total = w.toLong() * h.toLong()
+            if (total <= 0L) return out
+            val step = maxOf(1L, (total + HISTOGRAM_SAMPLE_CAP - 1L) / HISTOGRAM_SAMPLE_CAP)
+            val sampleCount = ((total + step - 1L) / step).coerceAtMost(HISTOGRAM_SAMPLE_CAP.toLong()).toInt()
+            val pixels = IntArray(sampleCount)
+            var sampleIndex = 0
+            var linearIndex = 0L
+            while (linearIndex < total && sampleIndex < sampleCount) {
+                val y = (linearIndex / w.toLong()).toInt()
+                val x = (linearIndex % w.toLong()).toInt()
+                src.getPixels(pixels, sampleIndex, 1, x, y, 1, 1)
+                sampleIndex++
+                linearIndex += step
+            }
+            for (i in 0 until sampleIndex) {
+                val pixel = pixels[i]
+                val r = (pixel shr 16) and 0xFF
+                val g = (pixel shr 8) and 0xFF
+                val b = pixel and 0xFF
+                out[0][(r * bins) ushr 8]++
+                out[1][(g * bins) ushr 8]++
+                out[2][(b * bins) ushr 8]++
             }
             out
         } catch (_: OutOfMemoryError) {
