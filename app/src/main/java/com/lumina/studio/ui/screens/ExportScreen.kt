@@ -319,7 +319,7 @@ fun ExportScreen(navController: NavController, projectId: String? = null) {
             val memoryError = Exporter.checkTiffBudget(
                 targetW,
                 targetH,
-                com.lumina.studio.core.render.MemoryBudget.availableHeapBytes()
+                Runtime.getRuntime().maxMemory()
             )
             if (memoryError != null) {
                 error = memoryError
