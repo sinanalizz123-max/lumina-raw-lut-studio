@@ -30,6 +30,11 @@ interface ProjectDao {
     suspend fun deleteById(id: String)
 }
 
+data class EditHistoryCount(
+    val projectId: String,
+    val count: Int
+)
+
 @Dao
 interface EditHistoryDao {
     @Query("SELECT * FROM edit_history WHERE projectId = :projectId ORDER BY createdAt DESC")
@@ -37,6 +42,9 @@ interface EditHistoryDao {
 
     @Query("SELECT COUNT(*) FROM edit_history WHERE projectId = :projectId")
     fun observeCountForProject(projectId: String): Flow<Int>
+
+    @Query("SELECT projectId, COUNT(*) AS count FROM edit_history GROUP BY projectId")
+    suspend fun countAllByProject(): List<EditHistoryCount>
 
     @Query("SELECT COUNT(*) FROM edit_history WHERE projectId = :projectId")
     suspend fun countForProject(projectId: String): Int
