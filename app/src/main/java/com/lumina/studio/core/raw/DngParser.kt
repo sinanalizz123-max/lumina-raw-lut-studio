@@ -146,8 +146,9 @@ object DngParser {
                 next = afterEntries
             }
             if (ifdOffsets.isEmpty()) return DngParseResult.Err("Malformed TIFF: no IFDs")
-            val mainEntries = readEntries(bytes, ifdOffsets[0], little)
-                as? EntryMap ?: return (mainEntries as DngParseResult.Err)
+            val mainRaw = readEntries(bytes, ifdOffsets[0], little)
+            if (mainRaw is DngParseResult.Err) return mainRaw
+            val mainEntries = mainRaw as EntryMap
             val main = buildMainInfo(bytes, mainEntries, little)
                 ?: return DngParseResult.Err((buildMainInfoError))
             val previews = ArrayList<DngPreviewInfo>()
