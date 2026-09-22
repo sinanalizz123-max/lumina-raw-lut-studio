@@ -146,8 +146,9 @@ object SyntheticDng {
             finalFields.add(Field(33422, 1, cfaPattern.size.toLong(), u32(patOff, little)))
         }
         finalFields.add(Field(50713, 3, 2, blackDimInline))
-        finalFields.add(Field(50714, 3, 1, u16(black.toInt(), little)))
-        finalFields.add(Field(50717, 3, 1, u16(white.toInt(), little)))
+        // valueOrOffset MUST be 4 bytes: entry() pads the 2-byte SHORT.
+        finalFields.add(entry(50714, 3, 1, u16(black.toInt(), little)))
+        finalFields.add(entry(50717, 3, 1, u16(white.toInt(), little)))
         if (asShotNeutral != null) {
             finalFields.add(Field(50728, 5, 3, u32(asnOff, little)))
         }
