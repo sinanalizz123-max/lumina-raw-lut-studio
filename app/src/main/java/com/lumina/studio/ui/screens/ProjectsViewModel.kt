@@ -150,6 +150,7 @@ class ProjectsViewModel(application: Application) : AndroidViewModel(application
 
     private var lastDeleted: Project? = null
     private var lastDeletedTrashToken: String? = null
+    private var lastDeleteJob: Job? = null
 
     val uiState: StateFlow<ProjectsUiState> = combine(
         database.projectDao().observeProjects(),
@@ -589,16 +590,23 @@ class ProjectsViewModel(application: Application) : AndroidViewModel(application
      */
     fun delete(project: Project) {
         lastDeleted = project
-        lastDeletedTrashToken = null
-        viewModelScope.launch(Dispatchers.IO) {
-            deleteProjectRow(project.id, deleteFiles = false)
-            lastDeletedTrashToken = ProjectStore.trashProjectFiles(
-                getApplication(),
-                project.id
-            )
-            if (lastDeletedTrashToken == null) {
+        lastDeletedTrashToken = ProjectStore.trashProjectFiles(
+            getApplication(),
+            project.id
+        )
+        if (lastDeletedTrashToken == null) {
+            lastDeleted = null
+            viewModelScope.launch(Dispatchers.IO) {
+                deleteProjectRow(project.id)
                 _notice.value = "Deleted photo; undo unavailable"
             }
+            return
+        }
+        // Directory rename is metadata-only and completes before the snackbar
+        // can be tapped. The database deletion remains cancellable by Undo.
+        lastDeleteJob?.cancel()
+        lastDeleteJob = viewModelScope.launch(Dispatchers.IO) {
+            deleteProjectRow(project.id, deleteFiles = false)
         }
     }
 
@@ -637,9 +645,13 @@ class ProjectsViewModel(application: Application) : AndroidViewModel(application
     fun undoDelete(): Project? {
         val deleted = lastDeleted ?: return null
         val token = lastDeletedTrashToken ?: return null
+        val deleteJob = lastDeleteJob
         lastDeleted = null
         lastDeletedTrashToken = null
+        lastDeleteJob = null
         viewModelScope.launch(Dispatchers.IO) {
+            deleteJob?.cancel()
+            runCatching { deleteJob?.join() }
             val app = getApplication<Application>()
             val restored = ProjectStore.restoreTrashedProjectFiles(app, deleted.id, token)
             if (!restored) {
