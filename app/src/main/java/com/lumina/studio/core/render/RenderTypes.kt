@@ -103,9 +103,12 @@ object MemoryBudget {
      */
     fun tiffWorkingBytes(width: Int, height: Int): Long {
         if (width <= 0 || height <= 0) return 0L
-        val pixels = width.toLong() * height.toLong()
-        return pixels * (BYTES_PER_PIXEL_ARGB_8888 + 2 * BYTES_PER_PIXEL_RGB_TIFF) +
+        val pixels = saturatingMultiply(width.toLong(), height.toLong())
+        val bytesPerPixel = BYTES_PER_PIXEL_ARGB_8888 + 2L * BYTES_PER_PIXEL_RGB_TIFF
+        return saturatingAdd(
+            saturatingMultiply(pixels, bytesPerPixel),
             com.lumina.studio.core.export.TiffWriter.TIFF_FILE_OVERHEAD_BYTES
+        )
     }
 
     /** True when the TIFF path would exceed [capBytes] working memory. */
@@ -143,12 +146,25 @@ object MemoryBudget {
 
     fun bytesFor(width: Int, height: Int, bytesPerPixel: Long = BYTES_PER_PIXEL_ARGB_8888): Long {
         if (width <= 0 || height <= 0 || bytesPerPixel <= 0L) return 0L
-        return width.toLong() * height.toLong() * bytesPerPixel
+        return saturatingMultiply(
+            saturatingMultiply(width.toLong(), height.toLong()),
+            bytesPerPixel
+        )
     }
 
     fun exceeds(width: Int, height: Int, capPixels: Long = MAX_RENDER_PIXELS): Boolean {
         if (width <= 0 || height <= 0) return false
-        return width.toLong() * height.toLong() > capPixels
+        return saturatingMultiply(width.toLong(), height.toLong()) > capPixels
+    }
+
+    private fun saturatingMultiply(a: Long, b: Long): Long {
+        if (a <= 0L || b <= 0L) return 0L
+        return if (a > Long.MAX_VALUE / b) Long.MAX_VALUE else a * b
+    }
+
+    private fun saturatingAdd(a: Long, b: Long): Long {
+        if (a >= Long.MAX_VALUE - b) return Long.MAX_VALUE
+        return a + b
     }
 
     fun exceeds(dims: Dims?, capPixels: Long = MAX_RENDER_PIXELS): Boolean {
