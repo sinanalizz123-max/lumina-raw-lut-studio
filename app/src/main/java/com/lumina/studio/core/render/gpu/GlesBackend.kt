@@ -10,6 +10,7 @@ import android.opengl.EGLConfig
 import android.opengl.EGLContext
 import android.opengl.EGLDisplay
 import android.opengl.EGLSurface
+import android.opengl.EGLExt
 import android.opengl.GLES30
 import android.opengl.GLUtils
 import com.lumina.studio.core.edit.StepKey
@@ -60,6 +61,22 @@ class GlesUnavailable(message: String, cause: Throwable? = null) : Exception(mes
  * On-device only: CI compiles this file but cannot execute GLES (no
  * emulator); parity screenshots, timing and context-loss recovery need
  * on-device validation.
+ *
+ * M16 lifecycle audit (§3, verified, no change needed except docs):
+ * - Per-render textures (LUT 3D/1D, curves) are created in
+ *   renderOnGlLocked and deleted in its `finally` — never leak, even on
+ *   shader failure. Reused-across-renders state is bounded: one srcTex, one
+ *   fboTex, one FBO, one program, three tiny placeholders.
+ * - Low-memory trim hook exists ([attachLowMemoryHook]: teardown on
+ *   onLowMemory + TRIM_MEMORY_MODERATE) and ViewModel.onCleared calls
+ *   releaseGpu(); EGL/GL objects are lazy re-inits afterwards.
+ * - OOM anywhere on the GL thread surfaces as ExecutionException cause ->
+ *   teardown + CPU fallback (OomBudget when the CPU also refuses) — never
+ *   a crash, never a half-rendered frame.
+ * - §54 boundary: future.get() blocking work cannot be preempted by
+ *   coroutine cancel; superseded GPU renders are refused at entry via the
+ *   `cancelled` set (wired from EditorViewModel) and dropped by the
+ *   revision stale-check after.
  */
 class GlesBackend(
     private val cpuFallback: RenderBackend<Bitmap>? = null
@@ -582,7 +599,7 @@ class GlesBackend(
             EGL14.EGL_GREEN_SIZE, 8,
             EGL14.EGL_BLUE_SIZE, 8,
             EGL14.EGL_ALPHA_SIZE, 8,
-            EGL14.EGL_RENDERABLE_TYPE, EGL14.EGL_OPENGL_ES3_BIT,
+            EGL14.EGL_RENDERABLE_TYPE, EGLExt.EGL_OPENGL_ES3_BIT_KHR,
             EGL14.EGL_SURFACE_TYPE, EGL14.EGL_PBUFFER_BIT,
             EGL14.EGL_NONE
         )
