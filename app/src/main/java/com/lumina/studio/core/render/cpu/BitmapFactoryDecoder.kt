@@ -8,6 +8,7 @@ import android.graphics.Rect
 import androidx.core.net.toUri
 import com.lumina.studio.core.render.Dims
 import com.lumina.studio.core.render.ImageDecoder
+import com.lumina.studio.core.render.MemoryBudget
 import com.lumina.studio.core.render.PixelRect
 import com.lumina.studio.core.render.PreviewRenderer
 import com.lumina.studio.core.render.RenderSource
@@ -34,6 +35,8 @@ class BitmapFactoryDecoder(private val appContext: Context) : ImageDecoder<Bitma
                     }
                 }
             }
+        } catch (_: OutOfMemoryError) {
+            null
         } catch (_: Exception) {
             null
         }
@@ -48,9 +51,9 @@ class BitmapFactoryDecoder(private val appContext: Context) : ImageDecoder<Bitma
 
     private fun decodeFile(path: String, maxDim: Int): Bitmap? {
         return try {
-            PreviewRenderer.decodePreview(path, maxDim) ?: run {
-                decodeFileSampled(path, maxDim)
-            }
+            PreviewRenderer.decodePreview(path, maxDim) ?: decodeFileSampled(path, maxDim)
+        } catch (_: OutOfMemoryError) {
+            null
         } catch (_: Exception) {
             null
         }
@@ -96,11 +99,7 @@ class BitmapFactoryDecoder(private val appContext: Context) : ImageDecoder<Bitma
     }
 
     private fun sampledOptions(width: Int, height: Int, maxDim: Int): BitmapFactory.Options {
-        val safeMaxDim = maxDim.coerceAtLeast(1)
-        val longest = maxOf(width, height).toLong()
-        val sample = ((longest + safeMaxDim - 1L) / safeMaxDim)
-            .coerceIn(1L, Int.MAX_VALUE.toLong())
-            .toInt()
+        val sample = MemoryBudget.sampleFor(maxOf(width, height), maxDim)
         return BitmapFactory.Options().apply {
             inSampleSize = sample
             inPreferredConfig = Bitmap.Config.ARGB_8888
@@ -118,8 +117,7 @@ class BitmapFactoryDecoder(private val appContext: Context) : ImageDecoder<Bitma
             when (source) {
                 is RenderSource.File -> {
                     if (!File(source.path).exists()) return null
-                    val decoder = BitmapRegionDecoder.newInstance(source.path, false)
-                        ?: return null
+                    val decoder = BitmapRegionDecoder.newInstance(source.path, false) ?: return null
                     try {
                         decoder.decodeRegion(rect, opts)
                     } finally {
@@ -128,8 +126,7 @@ class BitmapFactoryDecoder(private val appContext: Context) : ImageDecoder<Bitma
                 }
                 is RenderSource.Content -> {
                     appContext.contentResolver.openInputStream(source.uri.toUri())?.use { input ->
-                        val decoder = BitmapRegionDecoder.newInstance(input, false)
-                            ?: return null
+                        val decoder = BitmapRegionDecoder.newInstance(input, false) ?: return null
                         try {
                             decoder.decodeRegion(rect, opts)
                         } finally {
