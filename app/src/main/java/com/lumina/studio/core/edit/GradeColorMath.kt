@@ -13,10 +13,26 @@ import kotlin.math.log2
  */
 object GradeHsl {
     fun rgbToHsl(r: Float, g: Float, b: Float): FloatArray {
+        val out = FloatArray(3)
+        rgbToHslInto(r, g, b, out)
+        return out
+    }
+
+    /**
+     * M16 allocation-free variant (§34): writes H/S/L into [out] (size >= 3),
+     * bit-identical to [rgbToHsl]. Hot pixel loops must call this with a
+     * thread-local scratch buffer instead of allocating per pixel.
+     */
+    fun rgbToHslInto(r: Float, g: Float, b: Float, out: FloatArray) {
         val max = maxOf(r, g, b)
         val min = minOf(r, g, b)
         val l = (max + min) / 2f
-        if (max == min) return floatArrayOf(0f, 0f, l.coerceIn(0f, 1f))
+        if (max == min) {
+            out[0] = 0f
+            out[1] = 0f
+            out[2] = l.coerceIn(0f, 1f)
+            return
+        }
         val d = max - min
         val s = if (l > 0.5f) d / (2f - max - min) else d / (max + min)
         var h = when (max) {
@@ -26,17 +42,45 @@ object GradeHsl {
         }
         h *= 60f
         if (h < 0f) h += 360f
-        return floatArrayOf(h, s.coerceIn(0f, 1f), l.coerceIn(0f, 1f))
+        out[0] = h
+        out[1] = s.coerceIn(0f, 1f)
+        out[2] = l.coerceIn(0f, 1f)
     }
 
     fun hslToRgb(hDeg: Float, s: Float, l: Float): FloatArray {
+        val out = FloatArray(3)
+        hslToRgbInto(hDeg, s, l, out)
+        return out
+    }
+
+    /**
+     * M16 allocation-free variant (§34): writes R/G/B into [out] (size >= 3),
+     * bit-identical to [hslToRgb]. Hot pixel loops must call this with a
+     * thread-local scratch buffer instead of allocating per pixel.
+     */
+    fun hslToRgbInto(hDeg: Float, s: Float, l: Float, out: FloatArray) {
+        hslToRgbInto(hDeg, s, l, out, 0)
+    }
+
+    /**
+     * M16 offset variant for packed scratch buffers (§34). Writes R/G/B at
+     * [offset]..[offset+2], bit-identical to [hslToRgb].
+     */
+    fun hslToRgbInto(hDeg: Float, s: Float, l: Float, out: FloatArray, offset: Int) {
         val h = (((hDeg % 360f) + 360f) % 360f) / 360f
         val sat = s.coerceIn(0f, 1f)
         val light = l.coerceIn(0f, 1f)
-        if (sat == 0f) return floatArrayOf(light, light, light)
+        if (sat == 0f) {
+            out[offset] = light
+            out[offset + 1] = light
+            out[offset + 2] = light
+            return
+        }
         val q = if (light < 0.5f) light * (1f + sat) else light + sat - light * sat
         val p = 2f * light - q
-        return floatArrayOf(hueToRgb(p, q, h + 1f / 3f), hueToRgb(p, q, h), hueToRgb(p, q, h - 1f / 3f))
+        out[offset] = hueToRgb(p, q, h + 1f / 3f)
+        out[offset + 1] = hueToRgb(p, q, h)
+        out[offset + 2] = hueToRgb(p, q, h - 1f / 3f)
     }
 
     private fun hueToRgb(p: Float, q: Float, t: Float): Float {
@@ -88,6 +132,16 @@ object GradeMath {
      * reverse. smoothstep edges keep the blend C1-continuous (no banding).
      */
     fun zoneWeights(luma: Float, balance: Float = 0f): FloatArray {
+        val out = FloatArray(3)
+        zoneWeightsInto(luma, balance, out)
+        return out
+    }
+
+    /**
+     * M16 allocation-free variant (§34): writes [shadow, mid, high] into
+     * [out] (size >= 3), bit-identical to [zoneWeights].
+     */
+    fun zoneWeightsInto(luma: Float, balance: Float, out: FloatArray) {
         val shift = (balance.coerceIn(-100f, 100f) / 100f) * 0.2f
         val l = luma.coerceIn(0f, 1f)
         val s = 1f - smoothstep(0.25f + shift, 0.6f + shift, l)
@@ -95,43 +149,109 @@ object GradeMath {
         var m = 1f - s - h
         if (m < 0f) m = 0f
         val sum = s + m + h
-        if (sum <= 0f) return floatArrayOf(1f, 0f, 0f)
-        return floatArrayOf(s / sum, m / sum, h / sum)
+        if (sum <= 0f) {
+            out[0] = 1f
+            out[1] = 0f
+            out[2] = 0f
+            return
+        }
+        out[0] = s / sum
+        out[1] = m / sum
+        out[2] = h / sum
     }
 
     fun tintFor(hueDeg: Float, sat: Float): FloatArray {
+        val out = FloatArray(3)
+        tintForInto(hueDeg, sat, out)
+        return out
+    }
+
+    /**
+     * M16 allocation-free variant (§34): bit-identical to [tintFor].
+     */
+    fun tintForInto(hueDeg: Float, sat: Float, out: FloatArray) {
         val s = sat.coerceIn(0f, 100f) / 100f
-        return GradeHsl.hslToRgb(GradeAdjust.wrapHue(hueDeg), s, 0.5f)
+        hslToRgbInto(GradeAdjust.wrapHue(hueDeg), s, 0.5f, out)
     }
 
     fun zoneLift(adjust: GradeAdjust): FloatArray {
-        val tint = tintFor(adjust.hue, adjust.sat)
+        val out = FloatArray(3)
+        zoneLiftInto(adjust, out)
+        return out
+    }
+
+    /**
+     * M16 allocation-free variant (§34): bit-identical to [zoneLift].
+     * Uses the caller-provided [scratch] (size >= 3) for the tint lookup so
+     * no temporary array is allocated.
+     */
+    fun zoneLiftInto(adjust: GradeAdjust, out: FloatArray, scratch: FloatArray = FloatArray(3)) {
+        tintForInto(adjust.hue, adjust.sat, scratch)
         val k = (adjust.sat.coerceIn(0f, 100f) / 100f) * 2f
         val lum = adjust.lum.coerceIn(-100f, 100f) / 100f * 0.25f
-        return floatArrayOf(
-            (tint[0] - 0.5f) * k + lum,
-            (tint[1] - 0.5f) * k + lum,
-            (tint[2] - 0.5f) * k + lum
-        )
+        out[0] = (scratch[0] - 0.5f) * k + lum
+        out[1] = (scratch[1] - 0.5f) * k + lum
+        out[2] = (scratch[2] - 0.5f) * k + lum
     }
 
     fun applyGrade(r: Float, g: Float, b: Float, grade: GradeParams): FloatArray {
-        if (grade.isDefault()) return floatArrayOf(r, g, b)
+        val out = FloatArray(3)
+        applyGradeInto(r, g, b, grade, out)
+        return out
+    }
+
+    /**
+     * M16 allocation-free variant (§34): writes the graded pixel into [out]
+     * (size >= 3), bit-identical to [applyGrade]. [scratch] (size >= 18:
+     * 3 weights + 4x3 lifts + 3 tint temp) backs the intermediate zone math
+     * so a hot per-pixel loop allocates nothing. Callers must provide a
+     * thread-local scratch; the default allocates (parity path for tests).
+     */
+    fun applyGradeInto(
+        r: Float, g: Float, b: Float, grade: GradeParams, out: FloatArray,
+        scratch: FloatArray = FloatArray(18)
+    ) {
+        if (grade.isDefault()) {
+            out[0] = r
+            out[1] = g
+            out[2] = b
+            return
+        }
         val blend = grade.blending.coerceIn(0f, 100f) / 100f
-        if (blend <= 0f) return floatArrayOf(r, g, b)
-        val w = zoneWeights(lumaOf(r, g, b), grade.balance)
-        val ls = zoneLift(grade.shadows)
-        val lm = zoneLift(grade.midtones)
-        val lh = zoneLift(grade.highlights)
-        val lg = zoneLift(grade.global)
-        val liftR = w[0] * ls[0] + w[1] * lm[0] + w[2] * lh[0] + lg[0]
-        val liftG = w[0] * ls[1] + w[1] * lm[1] + w[2] * lh[1] + lg[1]
-        val liftB = w[0] * ls[2] + w[1] * lm[2] + w[2] * lh[2] + lg[2]
-        return floatArrayOf(
-            (r + liftR * blend).coerceIn(0f, 1f),
-            (g + liftG * blend).coerceIn(0f, 1f),
-            (b + liftB * blend).coerceIn(0f, 1f)
-        )
+        if (blend <= 0f) {
+            out[0] = r
+            out[1] = g
+            out[2] = b
+            return
+        }
+        // Layout: [0..2] weights, [3..5] shadow lift, [6..8] mid, [9..11]
+        // highlight, [12..14] global, [15..17] tint temp. Single buffer,
+        // zero per-pixel allocs.
+        zoneWeightsInto(lumaOf(r, g, b), grade.balance, scratch)
+        val w0 = scratch[0]
+        val w1 = scratch[1]
+        val w2 = scratch[2]
+        zoneLiftInto(grade.shadows, scratch, scratch, base = 3, tintBase = 15)
+        zoneLiftInto(grade.midtones, scratch, scratch, base = 6, tintBase = 15)
+        zoneLiftInto(grade.highlights, scratch, scratch, base = 9, tintBase = 15)
+        zoneLiftInto(grade.global, scratch, scratch, base = 12, tintBase = 15)
+        val liftR = w0 * scratch[3] + w1 * scratch[6] + w2 * scratch[9] + scratch[12]
+        val liftG = w0 * scratch[4] + w1 * scratch[7] + w2 * scratch[10] + scratch[13]
+        val liftB = w0 * scratch[5] + w1 * scratch[8] + w2 * scratch[11] + scratch[14]
+        out[0] = (r + liftR * blend).coerceIn(0f, 1f)
+        out[1] = (g + liftG * blend).coerceIn(0f, 1f)
+        out[2] = (b + liftB * blend).coerceIn(0f, 1f)
+    }
+
+    private fun zoneLiftInto(adjust: GradeAdjust, out: FloatArray, buf: FloatArray, base: Int, tintBase: Int = 15) {
+        val hue = GradeAdjust.wrapHue(adjust.hue)
+        val s = adjust.sat.coerceIn(0f, 100f) / 100f
+        hslToRgbInto(hue, s, 0.5f, buf, tintBase)
+        val k = (adjust.sat.coerceIn(0f, 100f) / 100f) * 2f
+        val lum = adjust.lum.coerceIn(-100f, 100f) / 100f * 0.25f
+        out[base] = (buf[tintBase] - 0.5f) * k + lum
+        out[base + 1] = (buf[tintBase + 1] - 0.5f) * k + lum
+        out[base + 2] = (buf[tintBase + 2] - 0.5f) * k + lum
     }
 }
 
@@ -158,13 +278,41 @@ object PointColorMath {
     }
 
     fun applyPoint(r: Float, g: Float, b: Float, point: PointColorParams): FloatArray {
-        if (point.isDefault()) return floatArrayOf(r, g, b)
-        val hsl = GradeHsl.rgbToHsl(r, g, b)
-        val w = falloffWeight(hsl[0], point.hueCenter, point.hueRange)
-        if (w <= 0f) return floatArrayOf(r, g, b)
-        val s = (hsl[1] * (1f + w * point.satAdjust / 100f)).coerceIn(0f, 1f)
-        val l = (hsl[2] + w * point.lumAdjust * 0.0025f).coerceIn(0f, 1f)
-        return GradeHsl.hslToRgb(hsl[0], s, l)
+        val out = FloatArray(3)
+        applyPointInto(r, g, b, point, out)
+        return out
+    }
+
+    /**
+     * M16 allocation-free variant (§34): writes the point-corrected pixel
+     * into [out] (size >= 3), bit-identical to [applyPoint]. [scratch]
+     * (size >= 3) backs the HSL round-trip so a hot per-pixel loop allocates
+     * nothing. The default allocates (parity path for tests).
+     */
+    fun applyPointInto(
+        r: Float, g: Float, b: Float, point: PointColorParams, out: FloatArray,
+        scratch: FloatArray = FloatArray(3)
+    ) {
+        if (point.isDefault()) {
+            out[0] = r
+            out[1] = g
+            out[2] = b
+            return
+        }
+        GradeHsl.rgbToHslInto(r, g, b, scratch)
+        val hue = scratch[0]
+        val sat0 = scratch[1]
+        val lum0 = scratch[2]
+        val w = falloffWeight(hue, point.hueCenter, point.hueRange)
+        if (w <= 0f) {
+            out[0] = r
+            out[1] = g
+            out[2] = b
+            return
+        }
+        val s = (sat0 * (1f + w * point.satAdjust / 100f)).coerceIn(0f, 1f)
+        val l = (lum0 + w * point.lumAdjust * 0.0025f).coerceIn(0f, 1f)
+        GradeHsl.hslToRgbInto(hue, s, l, out)
     }
 }
 

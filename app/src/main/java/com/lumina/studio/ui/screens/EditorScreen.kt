@@ -682,9 +682,19 @@ fun EditorScreen(navController: NavController, projectId: String? = null) {
                     contentAlignment = Alignment.Center
                 ) {
                     val previewBitmap = displayBitmap
-                    if (showPreviewBitmap && previewBitmap != null) {
+                    // M16 (§67): asImageBitmap() allocates an interop wrapper
+                    // per call (no pixel decode — zero bitmap decoding during
+                    // composition, verified). Remembered per Bitmap instance
+                    // so unrelated recompositions (sliders, tool switches)
+                    // reuse the wrapper instead of reallocating.
+                    val previewImage = remember(previewBitmap) {
+                        previewBitmap?.takeUnless {
+                            runCatching { it.isRecycled }.getOrDefault(true)
+                        }?.asImageBitmap()
+                    }
+                    if (showPreviewBitmap && previewBitmap != null && previewImage != null) {
                         Image(
-                            bitmap = previewBitmap.asImageBitmap(),
+                            bitmap = previewImage,
                             contentDescription = current.name,
                             modifier = Modifier.fillMaxSize(),
                             contentScale = ContentScale.Fit
@@ -725,8 +735,14 @@ fun EditorScreen(navController: NavController, projectId: String? = null) {
                                         val density = LocalDensity.current
                                         val tileWdp = with(density) { tW.toDp() }
                                         val tileHdp = with(density) { tH.toDp() }
+                                        // M16 (§67): tile wrapper remembered
+                                        // per tile bitmap (no decode, no
+                                        // realloc on unrelated recomposes).
+                                        val tileImage = remember(tile.bitmap) {
+                                            tile.bitmap.asImageBitmap()
+                                        }
                                         Image(
-                                            bitmap = tile.bitmap.asImageBitmap(),
+                                            bitmap = tileImage,
                                             contentDescription = null,
                                             modifier = Modifier
                                                 .offset {
@@ -780,9 +796,11 @@ fun EditorScreen(navController: NavController, projectId: String? = null) {
                         // around @Composable invocations (M6 CI fix).
                         val pcm = pointColorMask
                         val pcmReady = pcm != null && runCatching { !pcm.isRecycled }.getOrDefault(false)
-                        if (pcmReady && pcm != null) {
+                        // M16 (§67): wrapper remembered per mask instance.
+                        val pcmImage = remember(pcm) { pcm?.asImageBitmap() }
+                        if (pcmReady && pcm != null && pcmImage != null) {
                             Image(
-                                bitmap = pcm.asImageBitmap(),
+                                bitmap = pcmImage,
                                 contentDescription = null,
                                 modifier = Modifier.fillMaxSize(),
                                 contentScale = ContentScale.Fit,
@@ -832,9 +850,11 @@ fun EditorScreen(navController: NavController, projectId: String? = null) {
                     if (!effectiveOriginal && showLensDepth) {
                         val depth = lensDepthPreview
                         val depthReady = depth != null && runCatching { !depth.isRecycled }.getOrDefault(false)
-                        if (depthReady && depth != null) {
+                        // M16 (§67): wrapper remembered per depth instance.
+                        val depthImage = remember(depth) { depth?.asImageBitmap() }
+                        if (depthReady && depth != null && depthImage != null) {
                             Image(
-                                bitmap = depth.asImageBitmap(),
+                                bitmap = depthImage,
                                 contentDescription = null,
                                 modifier = Modifier.fillMaxSize(),
                                 contentScale = ContentScale.Fit,

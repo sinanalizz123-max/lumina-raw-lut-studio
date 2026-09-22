@@ -78,6 +78,19 @@ object PreviewRenderer {
     private var cachedCurvesKey: Map<CurveChannel, List<com.lumina.studio.core.edit.CurvePoint>>? = null
     private var cachedCurveLuts: Map<CurveChannel, FloatArray?> = emptyMap()
 
+    // M16 (§34) per-pixel alloc elimination: hot loops must not allocate per
+    // pixel. These thread-local scratch buffers back the allocation-free
+    // `*Into` math variants (GradeHsl/GradeMath/PointColorMath/RetouchMath).
+    // Preview + tile + fullscreen renders run on concurrent Default workers,
+    // so thread-locals (not shared fields) keep reuse thread-safe. Each
+    // buffer is sized for its consumer; see PERFORMANCE.md ledger.
+    private val hslScratchA = ThreadLocal.withInitial { FloatArray(3) }
+    private val hslScratchB = ThreadLocal.withInitial { FloatArray(3) }
+    private val gradeScratch = ThreadLocal.withInitial { FloatArray(18) }
+    private val gradeOut = ThreadLocal.withInitial { FloatArray(3) }
+    private val pointScratch = ThreadLocal.withInitial { FloatArray(3) }
+    private val pointOut = ThreadLocal.withInitial { FloatArray(3) }
+
     internal fun curveLutsFor(params: EditParams): Map<CurveChannel, FloatArray?> {
         val key = params.curves
         synchronized(curvesCacheLock) {
@@ -335,14 +348,22 @@ object PreviewRenderer {
         val centers = FloatArray(active.size) { active[it].centerHueDeg }
         val hasLumAdjust = lums.any { it != 0f }
         val total = w * h
-        val pixels = IntArray(total)
-        src.getPixels(pixels, 0, w, 0, 0, w, h)
-        for (i in pixels.indices) {
+        // M16 (§34 + buffer discipline): the per-pixel rgbToHsl/hslToRgb
+        // temporaries (up to 2 FloatArray(3) per pixel ≈ 3.8M objects on a
+        // 1600×1200 preview when the stage is active) are replaced by two
+        // thread-local scratch buffers. OOM anywhere below falls back to
+        // [src] (never a crash); the caller keeps the pre-stage bitmap.
+        return try {
+            val pixels = IntArray(total)
+            src.getPixels(pixels, 0, w, 0, 0, w, h)
+            val hsl = hslScratchA.get()
+            val rgb = hslScratchB.get()
+            for (i in pixels.indices) {
             val p = pixels[i]
             val r0 = ((p shr 16) and 0xFF) / 255f
             val g0 = ((p shr 8) and 0xFF) / 255f
             val b0 = (p and 0xFF) / 255f
-            val hsl = rgbToHsl(r0, g0, b0)
+            rgbToHslInto(r0, g0, b0, hsl)
             var hDeg = hsl[0]
             var s = hsl[1]
             var l = hsl[2]
@@ -363,7 +384,7 @@ object PreviewRenderer {
                     hDeg = ((hDeg + hueShift) % 360f + 360f) % 360f
                     s = (s * (1f + satFactor)).coerceIn(0f, 1f)
                     l = (l + lumDelta).coerceIn(0f, 1f)
-                    val rgb = hslToRgb(hDeg, s, l)
+                    hslToRgbInto(hDeg, s, l, rgb)
                     val a = p ushr 24
                     pixels[i] = (a shl 24) or
                         ((rgb[0] * 255f + 0.5f).toInt().coerceIn(0, 255) shl 16) or
@@ -384,7 +405,7 @@ object PreviewRenderer {
                 }
                 if (lumDelta != 0f || s != hsl[1]) {
                     l = (l + lumDelta).coerceIn(0f, 1f)
-                    val rgb = hslToRgb(hDeg, s, l)
+                    hslToRgbInto(hDeg, s, l, rgb)
                     val a = p ushr 24
                     pixels[i] = (a shl 24) or
                         ((rgb[0] * 255f + 0.5f).toInt().coerceIn(0, 255) shl 16) or
@@ -392,10 +413,15 @@ object PreviewRenderer {
                         (rgb[2] * 255f + 0.5f).toInt().coerceIn(0, 255)
                 }
             }
+            }
+            val out = createWorkingBitmap(w, h, quality)
+            out.setPixels(pixels, 0, w, 0, 0, w, h)
+            out
+        } catch (_: OutOfMemoryError) {
+            src
+        } catch (_: Exception) {
+            src
         }
-        val out = createWorkingBitmap(w, h, quality)
-        out.setPixels(pixels, 0, w, 0, 0, w, h)
-        return out
     }
 
     fun applyCurves(
@@ -416,10 +442,14 @@ object PreviewRenderer {
         val redLut = cached[CurveChannel.RED]
         val greenLut = cached[CurveChannel.GREEN]
         val blueLut = cached[CurveChannel.BLUE]
-        val total = w * h
-        val pixels = IntArray(total)
-        src.getPixels(pixels, 0, w, 0, 0, w, h)
-        for (i in pixels.indices) {
+        // M16: OOM at the pixel-buffer alloc or the output bitmap falls back
+        // to [src] (never a crash). The curve tables above are 256-float
+        // lookups shared via curveLutsFor — zero per-pixel allocs already.
+        return try {
+            val total = w * h
+            val pixels = IntArray(total)
+            src.getPixels(pixels, 0, w, 0, 0, w, h)
+            for (i in pixels.indices) {
             val p = pixels[i]
             val a = p ushr 24
             var r = (p shr 16) and 0xFF
@@ -434,10 +464,15 @@ object PreviewRenderer {
             if (greenLut != null) g = (greenLut[g] * 255f + 0.5f).toInt().coerceIn(0, 255)
             if (blueLut != null) b = (blueLut[b] * 255f + 0.5f).toInt().coerceIn(0, 255)
             pixels[i] = (a shl 24) or (r shl 16) or (g shl 8) or b
+            }
+            val out = createWorkingBitmap(w, h, quality)
+            out.setPixels(pixels, 0, w, 0, 0, w, h)
+            out
+        } catch (_: OutOfMemoryError) {
+            src
+        } catch (_: Exception) {
+            src
         }
-        val out = createWorkingBitmap(w, h, quality)
-        out.setPixels(pixels, 0, w, 0, 0, w, h)
-        return out
     }
 
     fun applyPointColor(
@@ -450,29 +485,40 @@ object PreviewRenderer {
         val w = src.width
         val h = src.height
         if (w <= 0 || h <= 0) return src
-        val total = w * h
-        val pixels = IntArray(total)
-        src.getPixels(pixels, 0, w, 0, 0, w, h)
-        var touched = false
-        for (i in pixels.indices) {
+        // M16 (§34): PointColorMath.applyPoint allocated ~2 FloatArray(3) per
+        // pixel (HSL round-trip). The Into variant writes into thread-local
+        // scratch — zero per-pixel allocs, bit-identical output.
+        return try {
+            val total = w * h
+            val pixels = IntArray(total)
+            src.getPixels(pixels, 0, w, 0, 0, w, h)
+            val out3 = pointOut.get()
+            val scratch = pointScratch.get()
+            var touched = false
+            for (i in pixels.indices) {
             val p = pixels[i]
             val r0 = ((p shr 16) and 0xFF) / 255f
             val g0 = ((p shr 8) and 0xFF) / 255f
             val b0 = (p and 0xFF) / 255f
-            val out = PointColorMath.applyPoint(r0, g0, b0, point)
-            val r = (out[0] * 255f + 0.5f).toInt().coerceIn(0, 255)
-            val g = (out[1] * 255f + 0.5f).toInt().coerceIn(0, 255)
-            val b = (out[2] * 255f + 0.5f).toInt().coerceIn(0, 255)
+            PointColorMath.applyPointInto(r0, g0, b0, point, out3, scratch)
+            val r = (out3[0] * 255f + 0.5f).toInt().coerceIn(0, 255)
+            val g = (out3[1] * 255f + 0.5f).toInt().coerceIn(0, 255)
+            val b = (out3[2] * 255f + 0.5f).toInt().coerceIn(0, 255)
             if (r != ((p shr 16) and 0xFF) || g != ((p shr 8) and 0xFF) || b != (p and 0xFF)) {
                 touched = true
                 val a = p ushr 24
                 pixels[i] = (a shl 24) or (r shl 16) or (g shl 8) or b
             }
+            }
+            if (!touched) return src
+            val out = createWorkingBitmap(w, h, quality)
+            out.setPixels(pixels, 0, w, 0, 0, w, h)
+            out
+        } catch (_: OutOfMemoryError) {
+            src
+        } catch (_: Exception) {
+            src
         }
-        if (!touched) return src
-        val out = createWorkingBitmap(w, h, quality)
-        out.setPixels(pixels, 0, w, 0, 0, w, h)
-        return out
     }
 
     fun applyGrading(
@@ -485,29 +531,41 @@ object PreviewRenderer {
         val w = src.width
         val h = src.height
         if (w <= 0 || h <= 0) return src
-        val total = w * h
-        val pixels = IntArray(total)
-        src.getPixels(pixels, 0, w, 0, 0, w, h)
-        var touched = false
-        for (i in pixels.indices) {
+        // M16 (§34): GradeMath.applyGrade allocated ~7 FloatArray(3) per
+        // pixel (weights + 4 lifts + tint + result ≈ 21 floats + headers).
+        // The Into variant packs everything into one 18-float thread-local
+        // scratch — zero per-pixel allocs, bit-identical output.
+        return try {
+            val total = w * h
+            val pixels = IntArray(total)
+            src.getPixels(pixels, 0, w, 0, 0, w, h)
+            val out3 = gradeOut.get()
+            val scratch = gradeScratch.get()
+            var touched = false
+            for (i in pixels.indices) {
             val p = pixels[i]
             val r0 = ((p shr 16) and 0xFF) / 255f
             val g0 = ((p shr 8) and 0xFF) / 255f
             val b0 = (p and 0xFF) / 255f
-            val out = GradeMath.applyGrade(r0, g0, b0, grade)
-            val r = (out[0] * 255f + 0.5f).toInt().coerceIn(0, 255)
-            val g = (out[1] * 255f + 0.5f).toInt().coerceIn(0, 255)
-            val b = (out[2] * 255f + 0.5f).toInt().coerceIn(0, 255)
+            GradeMath.applyGradeInto(r0, g0, b0, grade, out3, scratch)
+            val r = (out3[0] * 255f + 0.5f).toInt().coerceIn(0, 255)
+            val g = (out3[1] * 255f + 0.5f).toInt().coerceIn(0, 255)
+            val b = (out3[2] * 255f + 0.5f).toInt().coerceIn(0, 255)
             if (r != ((p shr 16) and 0xFF) || g != ((p shr 8) and 0xFF) || b != (p and 0xFF)) {
                 touched = true
                 val a = p ushr 24
                 pixels[i] = (a shl 24) or (r shl 16) or (g shl 8) or b
             }
+            }
+            if (!touched) return src
+            val out = createWorkingBitmap(w, h, quality)
+            out.setPixels(pixels, 0, w, 0, 0, w, h)
+            out
+        } catch (_: OutOfMemoryError) {
+            src
+        } catch (_: Exception) {
+            src
         }
-        if (!touched) return src
-        val out = createWorkingBitmap(w, h, quality)
-        out.setPixels(pixels, 0, w, 0, 0, w, h)
-        return out
     }
 
     /**
@@ -537,19 +595,24 @@ object PreviewRenderer {
             val pixels = IntArray(total)
             small.getPixels(pixels, 0, sw, 0, 0, sw, sh)
             if (!small.isRecycled) small.recycle()
+            // M16 (§34): one 3-float scratch for the whole overlay (was one
+            // FloatArray(3) per pixel via rgbToHsl).
+            val hsl = FloatArray(3)
             for (i in pixels.indices) {
                 val p = pixels[i]
                 val r0 = ((p shr 16) and 0xFF) / 255f
                 val g0 = ((p shr 8) and 0xFF) / 255f
                 val b0 = (p and 0xFF) / 255f
-                val hue = GradeHsl.rgbToHsl(r0, g0, b0)[0]
-                val weight = PointColorMath.falloffWeight(hue, point.hueCenter, point.hueRange)
+                GradeHsl.rgbToHslInto(r0, g0, b0, hsl)
+                val weight = PointColorMath.falloffWeight(hsl[0], point.hueCenter, point.hueRange)
                 val alpha = (weight * 160f + 0.5f).toInt().coerceIn(0, 160)
                 pixels[i] = (alpha shl 24) or (0xFF shl 16) or (0x40 shl 8) or 0x40
             }
             val out = Bitmap.createBitmap(sw, sh, Bitmap.Config.ARGB_8888)
             out.setPixels(pixels, 0, sw, 0, 0, sw, sh)
             out
+        } catch (_: OutOfMemoryError) {
+            null
         } catch (_: Exception) {
             null
         }
@@ -800,6 +863,8 @@ object PreviewRenderer {
             val out = createWorkingBitmap(w, h, quality)
             out.setPixels(working, 0, w, 0, 0, w, h)
             out
+        } catch (_: OutOfMemoryError) {
+            src
         } catch (_: Exception) {
             src
         }
@@ -932,6 +997,8 @@ object PreviewRenderer {
             val out = createWorkingBitmap(w, h, quality)
             out.setPixels(pixels, 0, w, 0, 0, w, h)
             out
+        } catch (_: OutOfMemoryError) {
+            src
         } catch (_: Exception) {
             src
         }
@@ -1007,6 +1074,9 @@ object PreviewRenderer {
         val median = retouchAnnulusMedian(pixels, w, h, op.cx, op.cy, rPx)
         val px = op.cx.coerceIn(0f, 1f) * w
         val py = op.cy.coerceIn(0f, 1f) * h
+        // M16 (§34): healPixel allocated FloatArray(3) per touched pixel —
+        // now a single per-call scratch via the Into variant.
+        val healed = FloatArray(3)
         var touched = false
         for (y in bounds[1]..bounds[3]) {
             for (x in bounds[0]..bounds[2]) {
@@ -1019,11 +1089,12 @@ object PreviewRenderer {
                 if (alpha <= 0.001f) continue
                 val i = y * w + x
                 val p = pixels[i]
-                val healed = RetouchMath.healPixel(
+                RetouchMath.healPixelInto(
                     ((p shr 16) and 0xFF) / 255f,
                     ((p shr 8) and 0xFF) / 255f,
                     (p and 0xFF) / 255f,
-                    median[0], median[1], median[2]
+                    median[0], median[1], median[2],
+                    healed
                 )
                 val a = p ushr 24
                 val r = RetouchMath.mix(((p shr 16) and 0xFF) / 255f, healed[0], alpha)
@@ -1195,9 +1266,28 @@ object PreviewRenderer {
             src.getPixels(basePx, 0, w, 0, 0, w, h)
             mild.getPixels(mildPx, 0, w, 0, 0, w, h)
             strong.getPixels(strongPx, 0, w, 0, 0, w, h)
+            // M16 (buffer discipline): the blur levels are pixel-copied
+            // above, so their Bitmaps are released BEFORE the blend loop —
+            // peak drops from 3 live full-frame Bitmaps to 1 (+ the output
+            // allocated after). Previously they lived until after the loop.
+            if (mild !== src) {
+                try {
+                    if (!mild.isRecycled) mild.recycle()
+                } catch (_: Exception) {
+                }
+            }
+            if (strong !== src && strong !== mild) {
+                try {
+                    if (!strong.isRecycled) strong.recycle()
+                } catch (_: Exception) {
+                }
+            }
             val aspect = (w.toFloat() / h.toFloat().coerceAtLeast(1f))
                 .let { if (it.isFinite() && it > 0f) it else 1f }
             val out = IntArray(total)
+            // M16 (§34): bandWeights allocated FloatArray(3) per blended
+            // pixel — now a single per-call scratch via the Into variant.
+            val weights = FloatArray(3)
             for (y in 0 until h) {
                 val ny = if (h > 1) y.toFloat() / (h - 1).toFloat() else 0.5f
                 for (x in 0 until w) {
@@ -1211,7 +1301,7 @@ object PreviewRenderer {
                         out[i] = basePx[i]
                         continue
                     }
-                    val weights = LensBlurMath.bandWeights(depth)
+                    LensBlurMath.bandWeightsInto(depth, weights)
                     val bp = basePx[i]
                     val mp = mildPx[i]
                     val sp = strongPx[i]
@@ -1231,21 +1321,11 @@ object PreviewRenderer {
                     out[i] = (a shl 24) or (r shl 16) or (g shl 8) or bl
                 }
             }
-            if (mild !== src) {
-                try {
-                    if (!mild.isRecycled) mild.recycle()
-                } catch (_: Exception) {
-                }
-            }
-            if (strong !== src && strong !== mild) {
-                try {
-                    if (!strong.isRecycled) strong.recycle()
-                } catch (_: Exception) {
-                }
-            }
             val result = createWorkingBitmap(w, h, quality)
             result.setPixels(out, 0, w, 0, 0, w, h)
             result
+        } catch (_: OutOfMemoryError) {
+            src
         } catch (_: Exception) {
             src
         }
@@ -1267,6 +1347,8 @@ object PreviewRenderer {
             } catch (_: Exception) {
             }
             up
+        } catch (_: OutOfMemoryError) {
+            src
         } catch (_: Exception) {
             src
         }
@@ -1310,6 +1392,8 @@ object PreviewRenderer {
             val out = Bitmap.createBitmap(sw, sh, Bitmap.Config.ARGB_8888)
             out.setPixels(pixels, 0, sw, 0, 0, sw, sh)
             out
+        } catch (_: OutOfMemoryError) {
+            null
         } catch (_: Exception) {
             null
         }
@@ -1358,6 +1442,8 @@ object PreviewRenderer {
                     }
                 }
             }
+        } catch (_: OutOfMemoryError) {
+            emptyList()
         } catch (_: Exception) {
             emptyList()
         }
@@ -1395,12 +1481,18 @@ object PreviewRenderer {
             val baseHues = if (needHues) FloatArray(total) else null
             val baseLumas = if (needLumas) FloatArray(total) else null
             if (baseHues != null || baseLumas != null) {
+                // M16 (§34): one 3-float scratch for the pre-pass (was one
+                // FloatArray(3) per pixel via rgbToHsl).
+                val hsl = FloatArray(3)
                 for (i in 0 until total) {
                     val p = baseCopy[i]
                     val r = ((p shr 16) and 0xFF) / 255f
                     val g = ((p shr 8) and 0xFF) / 255f
                     val b = (p and 0xFF) / 255f
-                    if (baseHues != null) baseHues[i] = rgbToHsl(r, g, b)[0]
+                    if (baseHues != null) {
+                        rgbToHslInto(r, g, b, hsl)
+                        baseHues[i] = hsl[0]
+                    }
                     if (baseLumas != null) {
                         baseLumas[i] = (0.2126f * r + 0.7152f * g + 0.0722f * b).coerceIn(0f, 1f)
                     }
@@ -1416,6 +1508,8 @@ object PreviewRenderer {
             val out = createWorkingBitmap(w, h, quality)
             out.setPixels(pixels, 0, w, 0, 0, w, h)
             out
+        } catch (_: OutOfMemoryError) {
+            src
         } catch (_: Exception) {
             src
         }
@@ -1759,10 +1853,26 @@ object PreviewRenderer {
     }
 
     fun rgbToHsl(r: Float, g: Float, b: Float): FloatArray {
+        val out = FloatArray(3)
+        rgbToHslInto(r, g, b, out)
+        return out
+    }
+
+    /**
+     * M16 allocation-free variant (§34): writes H/S/L into [out] (size >= 3),
+     * bit-identical to [rgbToHsl]. Hot pixel loops must call this with a
+     * thread-local scratch buffer instead of allocating per pixel.
+     */
+    fun rgbToHslInto(r: Float, g: Float, b: Float, out: FloatArray) {
         val max = maxOf(r, g, b)
         val min = minOf(r, g, b)
         val l = (max + min) / 2f
-        if (max == min) return floatArrayOf(0f, 0f, l.coerceIn(0f, 1f))
+        if (max == min) {
+            out[0] = 0f
+            out[1] = 0f
+            out[2] = l.coerceIn(0f, 1f)
+            return
+        }
         val d = max - min
         val s = if (l > 0.5f) d / (2f - max - min) else d / (max + min)
         var h = when (max) {
@@ -1772,17 +1882,37 @@ object PreviewRenderer {
         }
         h *= 60f
         if (h < 0f) h += 360f
-        return floatArrayOf(h, s.coerceIn(0f, 1f), l.coerceIn(0f, 1f))
+        out[0] = h
+        out[1] = s.coerceIn(0f, 1f)
+        out[2] = l.coerceIn(0f, 1f)
     }
 
     fun hslToRgb(hDeg: Float, s: Float, l: Float): FloatArray {
+        val out = FloatArray(3)
+        hslToRgbInto(hDeg, s, l, out)
+        return out
+    }
+
+    /**
+     * M16 allocation-free variant (§34): writes R/G/B into [out] (size >= 3),
+     * bit-identical to [hslToRgb]. Hot pixel loops must call this with a
+     * thread-local scratch buffer instead of allocating per pixel.
+     */
+    fun hslToRgbInto(hDeg: Float, s: Float, l: Float, out: FloatArray) {
         val h = (((hDeg % 360f) + 360f) % 360f) / 360f
         val sat = s.coerceIn(0f, 1f)
         val light = l.coerceIn(0f, 1f)
-        if (sat == 0f) return floatArrayOf(light, light, light)
+        if (sat == 0f) {
+            out[0] = light
+            out[1] = light
+            out[2] = light
+            return
+        }
         val q = if (light < 0.5f) light * (1f + sat) else light + sat - light * sat
         val p = 2f * light - q
-        return floatArrayOf(hueToRgb(p, q, h + 1f / 3f), hueToRgb(p, q, h), hueToRgb(p, q, h - 1f / 3f))
+        out[0] = hueToRgb(p, q, h + 1f / 3f)
+        out[1] = hueToRgb(p, q, h)
+        out[2] = hueToRgb(p, q, h - 1f / 3f)
     }
 
     private fun hueToRgb(p: Float, q: Float, t: Float): Float {
@@ -1863,15 +1993,18 @@ object PreviewRenderer {
 
     fun computeHistogram(src: Bitmap, bins: Int = HISTOGRAM_BINS): Array<IntArray> {
         val out = Array(3) { IntArray(bins) }
-        val w = src.width
-        val h = src.height
-        if (w <= 0 || h <= 0) return out
-        val total = w * h
-        val step = maxOf(1, total / HISTOGRAM_SAMPLE_CAP)
-        val pixels = IntArray(total)
-        src.getPixels(pixels, 0, w, 0, 0, w, h)
-        var i = 0
-        while (i < total) {
+        // M16: the full-frame pixel copy can OOM on huge frames — return the
+        // zero histogram instead of crashing; the caller keeps stale data.
+        return try {
+            val w = src.width
+            val h = src.height
+            if (w <= 0 || h <= 0) return out
+            val total = w * h
+            val step = maxOf(1, total / HISTOGRAM_SAMPLE_CAP)
+            val pixels = IntArray(total)
+            src.getPixels(pixels, 0, w, 0, 0, w, h)
+            var i = 0
+            while (i < total) {
             val pixel = pixels[i]
             val r = (pixel shr 16) and 0xFF
             val g = (pixel shr 8) and 0xFF
@@ -1880,8 +2013,13 @@ object PreviewRenderer {
             out[1][(g * bins) ushr 8]++
             out[2][(b * bins) ushr 8]++
             i += step
+            }
+            out
+        } catch (_: OutOfMemoryError) {
+            out
+        } catch (_: Exception) {
+            out
         }
-        return out
     }
 
     fun decodePreview(filePath: String, maxDim: Int = MAX_PREVIEW_DIM): Bitmap? {
@@ -1907,6 +2045,8 @@ object PreviewRenderer {
             } catch (_: Exception) {
                 decoded
             }
+        } catch (_: OutOfMemoryError) {
+            null
         } catch (_: Exception) {
             null
         }

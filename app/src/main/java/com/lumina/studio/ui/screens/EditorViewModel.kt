@@ -267,6 +267,12 @@ class EditorViewModel(application: Application, private val projectId: String?) 
     private var useFullDevelop = true
     private val previewGenerations = GenerationTracker()
     private val fullscreenGenerations = GenerationTracker()
+    // M16 (§54): last issued backend generations so a superseded render can
+    // be refused at backend entry (Cpu/Gles `cancelled` sets) in addition to
+    // the post-render stale-drop below. Bitmap work itself is blocking and
+    // cannot be preempted — the stale-drop stays authoritative.
+    private var lastPreviewBackendGen = 0L
+    private var lastFullscreenBackendGen = 0L
 
     private fun appDecoder(): ImageDecoder<Bitmap> =
         RenderBackends.decoder(getApplication())
@@ -498,6 +504,10 @@ class EditorViewModel(application: Application, private val projectId: String?) 
         val source = project.photoUri ?: return@withContext null
         try {
             decodeFull(source)
+        } catch (_: OutOfMemoryError) {
+            // M16: huge full-res decode refuses gracefully (export shows
+            // "could not decode") instead of crashing.
+            null
         } catch (e: Exception) {
             if (e is kotlinx.coroutines.CancellationException) throw e
             null
@@ -530,6 +540,8 @@ class EditorViewModel(application: Application, private val projectId: String?) 
                     RenderBackends.raw(getApplication()).develop(
                         RenderSource.of(pathOrUri), 0, _rawRecipe.value
                     )
+                } catch (_: OutOfMemoryError) {
+                    null
                 } catch (_: Exception) {
                     null
                 }
@@ -549,6 +561,9 @@ class EditorViewModel(application: Application, private val projectId: String?) 
                     BitmapFactory.decodeStream(input, null, opts)
                 }
             }
+        } catch (_: OutOfMemoryError) {
+            // M16: full-res decode OOM refuses gracefully (never a crash).
+            null
         } catch (e: Exception) {
             // M11 (§39): never swallow cancellation on export decode paths.
             if (e is kotlinx.coroutines.CancellationException) throw e
@@ -563,6 +578,8 @@ class EditorViewModel(application: Application, private val projectId: String?) 
                     RenderBackends.raw(getApplication()).develop(
                         RenderSource.of(pathOrUri), maxDim, _rawRecipe.value
                     )
+                } catch (_: OutOfMemoryError) {
+                    null
                 } catch (_: Exception) {
                     null
                 }
@@ -590,6 +607,12 @@ class EditorViewModel(application: Application, private val projectId: String?) 
                     BitmapFactory.decodeStream(input)
                 }
             }
+        } catch (_: OutOfMemoryError) {
+            // M16: preview-decode OOM refuses gracefully (blank preview +
+            // retry affordance) instead of crashing; the flag reset below
+            // keeps the "Processing large image…" indicator honest.
+            _largeDecoding.value = false
+            null
         } catch (_: Exception) {
             _largeDecoding.value = false
             null
@@ -1973,6 +1996,15 @@ class EditorViewModel(application: Application, private val projectId: String?) 
         renderJob?.cancel()
         _paramsRevision.value = _paramsRevision.value + 1
         val generation = previewGenerations.next()
+        // M16 (§54): refuse the superseded generation at backend entry when
+        // it has not started yet (stale-drop below stays authoritative for
+        // already-running blocking Bitmap work).
+        val supersededPreview = lastPreviewBackendGen
+        lastPreviewBackendGen = generation
+        if (supersededPreview != 0L) {
+            runCatching { RenderBackends.cpu().cancel(supersededPreview) }
+            runCatching { RenderBackends.gpu().cancel(supersededPreview) }
+        }
         renderJob = viewModelScope.launch(Dispatchers.Default) {
             val base = baseBitmap ?: return@launch
             val params = _params.value
@@ -1982,19 +2014,28 @@ class EditorViewModel(application: Application, private val projectId: String?) 
                 base, params, lut, RenderTarget.Preview(previewMaxDim), generation
             )
             val renderMs = SystemClock.elapsedRealtime() - renderStart
-            // §53: Job.cancel cannot preempt blocking Bitmap work, so a
-            // superseded render may still finish. Stale results must never
-            // overwrite the current preview.
+            // M16 (buffer discipline + timing): stale renders are recycled,
+            // the replaced preview is recycled (peak = 1 live preview-size
+            // bitmap, never 2), and every render logs to LuminaRender for
+            // on-device measurement (see PERFORMANCE.md).
             if (previewGenerations.isStale(generation)) {
                 if (out != null && out !== base) {
                     runCatching { if (!out.isRecycled) out.recycle() }
                 }
                 return@launch
             }
+            val old = _preview.value
             _preview.value = out
+            if (old !== out && old !== base) {
+                runCatching { if (old != null && !old.isRecycled) old.recycle() }
+            }
             runCatching {
                 val frame = out ?: base
                 val dims = if (frame != null) "${frame.width}×${frame.height}" else "—"
+                Log.d(
+                    TAG_RENDER,
+                    "preview $dims ${renderMs}ms backend=$backendLabel rev=${_paramsRevision.value}"
+                )
                 com.lumina.studio.core.util.DebugDiagnostics.reportRender(
                     backendLabel, appDecoder().name, renderMs, dims, _paramsRevision.value
                 )
@@ -2064,12 +2105,20 @@ class EditorViewModel(application: Application, private val projectId: String?) 
         if (!_fullscreen.value) return
         fullscreenJob?.cancel()
         val generation = fullscreenGenerations.next()
+        // M16 (§54): same superseded-generation refusal as the preview path.
+        val supersededFullscreen = lastFullscreenBackendGen
+        lastFullscreenBackendGen = generation
+        if (supersededFullscreen != 0L) {
+            runCatching { RenderBackends.cpu().cancel(supersededFullscreen) }
+            runCatching { RenderBackends.gpu().cancel(supersededFullscreen) }
+        }
         fullscreenJob = viewModelScope.launch(Dispatchers.Default) {
             try {
                 if (!immediate) delay(FULLSCREEN_DEBOUNCE_MS)
                 val path = _project.value?.photoUri ?: return@launch
                 val params = _params.value
                 val lut = LutRegistry.resolve(params.presetId)
+                val decodeStart = SystemClock.elapsedRealtime()
                 val decoded = withContext(Dispatchers.IO) { decodeFullscreenBitmap(path) }
                     ?: return@launch
                 ensureActive()
@@ -2078,6 +2127,11 @@ class EditorViewModel(application: Application, private val projectId: String?) 
                     RenderTarget.Fullscreen(FULLSCREEN_MAX_DIM), generation
                 )
                 ensureActive()
+                Log.d(
+                    TAG_RENDER,
+                    "fullscreen ${decoded.width}×${decoded.height} " +
+                        "decode+render=${SystemClock.elapsedRealtime() - decodeStart}ms rev=$generation"
+                )
                 if (rendered == null) {
                     try {
                         if (!decoded.isRecycled) decoded.recycle()
@@ -2560,6 +2614,11 @@ class EditorViewModel(application: Application, private val projectId: String?) 
 
     companion object {
         const val TAG_ZOOM_TILE = "EditorZoomTile"
+        // M16: render timing tag for on-device measurement. Preview renders
+        // log `preview WxH Nms backend=... rev=...`, fullscreen renders log
+        // decode+render, tiles keep TAG_ZOOM_TILE. Filter:
+        // `adb logcat -s LuminaRender EditorZoomTile`.
+        const val TAG_RENDER = "LuminaRender"
         const val MAX_STACK = 50
         const val PERSIST_DEBOUNCE_MS = 300L
         const val HISTOGRAM_DEBOUNCE_MS = 150L

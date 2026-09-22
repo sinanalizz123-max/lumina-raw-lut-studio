@@ -333,6 +333,9 @@ class ProjectsViewModel(application: Application) : AndroidViewModel(application
                 val lutsDir = ProjectStore.lutsDir(app)
                 var applied = 0
                 for (id in ids) {
+                    // M16 (§54): cooperative cancellation for batch loops —
+                    // rapid navigation away cancels instead of draining.
+                    ensureActive()
                     val project = database.projectDao().getById(id) ?: continue
                     val base = project.toEditParams()
                     val merged = if (preset == null) {
@@ -357,6 +360,8 @@ class ProjectsViewModel(application: Application) : AndroidViewModel(application
                 }
                 _notice.value = if (applied == 0) "Nothing changed" else "Applied to $applied photo(s)"
             } catch (e: Exception) {
+                // M16 (§54): never swallow cancellation as a notice.
+                if (e is kotlinx.coroutines.CancellationException) throw e
                 _notice.value = e.message ?: "Could not apply preset"
             }
         }
@@ -372,6 +377,8 @@ class ProjectsViewModel(application: Application) : AndroidViewModel(application
             try {
                 var applied = 0
                 for (id in ids) {
+                    // M16 (§54): cooperative cancellation for batch loops.
+                    ensureActive()
                     val project = database.projectDao().getById(id) ?: continue
                     val merged = SettingsClipboard.paste(project.toEditParams()) ?: continue
                     if (merged == project.toEditParams()) continue
@@ -382,6 +389,8 @@ class ProjectsViewModel(application: Application) : AndroidViewModel(application
                 }
                 _notice.value = if (applied == 0) "Nothing changed" else "Pasted to $applied photo(s)"
             } catch (e: Exception) {
+                // M16 (§54): never swallow cancellation as a notice.
+                if (e is kotlinx.coroutines.CancellationException) throw e
                 _notice.value = e.message ?: "Could not paste settings"
             }
         }
@@ -402,6 +411,10 @@ class ProjectsViewModel(application: Application) : AndroidViewModel(application
                         BatchExporter.exportProject(app, id, resolved)
                     }
                     results.add(BatchItemResult(id, true))
+                } catch (_: OutOfMemoryError) {
+                    // M16: one huge item must not kill the batch — record it
+                    // and continue with the rest.
+                    results.add(BatchItemResult(id, false, "Image too large for this device"))
                 } catch (e: Exception) {
                     if (e is kotlinx.coroutines.CancellationException) throw e
                     results.add(BatchItemResult(id, false, e.message ?: "Export failed"))

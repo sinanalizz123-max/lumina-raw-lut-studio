@@ -77,7 +77,68 @@ fun qualityForTarget(target: RenderTarget): RenderQuality = when (target) {
 
 object MemoryBudget {
     const val BYTES_PER_PIXEL_ARGB_8888 = 4L
+    const val BYTES_PER_PIXEL_RGB_TIFF = 3L
     const val MAX_RENDER_PIXELS = 120_000_000L
+
+    // M16 large-image policy (§3): tile-first above TILE_FIRST_PIXELS, decode
+    // caps per surface, graceful refusal above MAX_RENDER_PIXELS. Values are
+    // pure pixel math (no android.*) so JVM tests pin them; see
+    // PERFORMANCE.md for the on-device byte budgets.
+    const val PIXELS_12MP = 12_000_000L
+    const val PIXELS_24MP = 24_000_000L
+    const val PIXELS_48MP = 48_000_000L
+
+    /** Above this, zoom/fullscreen prefer region-decode tiles over full frames. */
+    const val TILE_FIRST_PIXELS = PIXELS_12MP
+
+    /**
+     * M16 TIFF triple-copy budget (§3): bitmapToRgb holds IntArray(4B/px) +
+     * rgb ByteArray(3B/px) while encodeTiff allocates the file image
+     * (3B/px + overhead). Pre-flight refusal before ANY giant alloc, so a
+     * 48MP TIFF (192MB + 144MB + 144MB) surfaces "image too large" instead
+     * of an OOM crash. Strip-export was assessed and rejected: TiffWriter's
+     * single-strip bytes are golden-pinned (offset 180, exact length), so a
+     * multi-strip rewrite would break parity for no on-device gain without
+     * a streaming file writer (see PERFORMANCE.md).
+     */
+    fun tiffWorkingBytes(width: Int, height: Int): Long {
+        if (width <= 0 || height <= 0) return 0L
+        val pixels = width.toLong() * height.toLong()
+        return pixels * (BYTES_PER_PIXEL_ARGB_8888 + 2 * BYTES_PER_PIXEL_RGB_TIFF) +
+            com.lumina.studio.core.export.TiffWriter.TIFF_FILE_OVERHEAD_BYTES
+    }
+
+    /** True when the TIFF path would exceed [capBytes] working memory. */
+    fun exceedsTiffBudget(width: Int, height: Int, capBytes: Long): Boolean {
+        if (width <= 0 || height <= 0 || capBytes <= 0L) return false
+        return tiffWorkingBytes(width, height) > capBytes
+    }
+
+    /**
+     * M16 strip math (pure): row count per horizontal band so each band's
+     * pixel buffer stays under [maxStripBytes]. Returns at least 1 row and
+     * at most [height]. Used by documentation/tests; the single-strip TIFF
+     * writer stays authoritative for output bytes.
+     */
+    fun stripRowsFor(width: Int, height: Int, maxStripBytes: Long, bytesPerPixel: Long = BYTES_PER_PIXEL_ARGB_8888): Int {
+        if (width <= 0 || height <= 0 || maxStripBytes <= 0L || bytesPerPixel <= 0L) return height.coerceAtLeast(1)
+        val rowBytes = width.toLong() * bytesPerPixel
+        if (rowBytes <= 0L) return height
+        val rows = (maxStripBytes / rowBytes).toInt().coerceAtLeast(1)
+        return rows.coerceAtMost(height)
+    }
+
+    /**
+     * M16 decode-sample math (pure): power-of-two inSampleSize so the
+     * longest edge fits in [maxDim]. Mirrors BitmapFactoryDecoder behavior
+     * for tests without android.*.
+     */
+    fun sampleFor(longestEdge: Int, maxDim: Int): Int {
+        if (longestEdge <= 0 || maxDim <= 0) return 1
+        var sample = 1
+        while (longestEdge / sample > maxDim) sample *= 2
+        return sample
+    }
 
     fun bytesFor(width: Int, height: Int, bytesPerPixel: Long = BYTES_PER_PIXEL_ARGB_8888): Long {
         if (width <= 0 || height <= 0 || bytesPerPixel <= 0L) return 0L

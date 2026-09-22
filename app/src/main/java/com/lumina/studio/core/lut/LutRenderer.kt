@@ -48,26 +48,39 @@ object LutRenderer {
         val t = intensity.coerceIn(0f, 1f)
         if (t <= 0f) return src
         if (src.width <= 0 || src.height <= 0) return src
-        val w = src.width
-        val h = src.height
-        val pixels = IntArray(w * h)
-        src.getPixels(pixels, 0, w, 0, 0, w, h)
-        val size = table.size
-        val data = table.data
-        val invRange = FloatArray(3) { c ->
-            val span = table.domainMax[c] - table.domainMin[c]
-            if (span > 1e-6f) 1f / span else 1f
-        }
-        val full = t >= 1f
-        for (i in pixels.indices) {
+        // M16: the full-frame IntArray alloc can OOM on huge frames — fall
+        // back to [src] (never a crash); the caller keeps pre-LUT pixels.
+        return try {
+            val w = src.width
+            val h = src.height
+            val pixels = IntArray(w * h)
+            src.getPixels(pixels, 0, w, 0, 0, w, h)
+            // M16 (§34): hoisted per-render constants (was `FloatArray(3)`
+            // built once per call — already fine) + thread-local trilinear
+            // scratch shared by sample3D/sample1D (zero per-pixel allocs).
+            val size = table.size
+            val data = table.data
+            val inv0: Float
+            val inv1: Float
+            val inv2: Float
+            run {
+                val span0 = table.domainMax[0] - table.domainMin[0]
+                val span1 = table.domainMax[1] - table.domainMin[1]
+                val span2 = table.domainMax[2] - table.domainMin[2]
+                inv0 = if (span0 > 1e-6f) 1f / span0 else 1f
+                inv1 = if (span1 > 1e-6f) 1f / span1 else 1f
+                inv2 = if (span2 > 1e-6f) 1f / span2 else 1f
+            }
+            val full = t >= 1f
+            for (i in pixels.indices) {
             val p = pixels[i]
             val a = p ushr 24
             val r0 = ((p shr 16) and 0xFF) / 255f
             val g0 = ((p shr 8) and 0xFF) / 255f
             val b0 = (p and 0xFF) / 255f
-            val r = ((r0 - table.domainMin[0]) * invRange[0]).coerceIn(0f, 1f)
-            val g = ((g0 - table.domainMin[1]) * invRange[1]).coerceIn(0f, 1f)
-            val b = ((b0 - table.domainMin[2]) * invRange[2]).coerceIn(0f, 1f)
+            val r = ((r0 - table.domainMin[0]) * inv0).coerceIn(0f, 1f)
+            val g = ((g0 - table.domainMin[1]) * inv1).coerceIn(0f, 1f)
+            val b = ((b0 - table.domainMin[2]) * inv2).coerceIn(0f, 1f)
             val out = if (table.is3D) sample3D(data, size, r, g, b) else sample1D(data, size, r, g, b)
             val fr = if (full) out[0] else r0 + (out[0] - r0) * t
             val fg = if (full) out[1] else g0 + (out[1] - g0) * t
@@ -76,14 +89,19 @@ object LutRenderer {
                 ((fr * 255f + 0.5f).toInt().coerceIn(0, 255) shl 16) or
                 ((fg * 255f + 0.5f).toInt().coerceIn(0, 255) shl 8) or
                 (fb * 255f + 0.5f).toInt().coerceIn(0, 255)
-        }
-        val out = try {
+            }
+            val out = try {
             Bitmap.createBitmap(w, h, outConfig)
-        } catch (_: Exception) {
+            } catch (_: Exception) {
             Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+            }
+            out.setPixels(pixels, 0, w, 0, 0, w, h)
+            out
+        } catch (_: OutOfMemoryError) {
+            src
+        } catch (_: Exception) {
+            src
         }
-        out.setPixels(pixels, 0, w, 0, 0, w, h)
-        return out
     }
 
     private val scratch = ThreadLocal.withInitial { FloatArray(3) }
@@ -125,9 +143,16 @@ object LutRenderer {
 
     private fun sample1D(data: FloatArray, size: Int, r: Float, g: Float, b: Float): FloatArray {
         val out = scratch.get()
-        val inputs = floatArrayOf(r, g, b)
+        // M16 (§34): the per-pixel `floatArrayOf(r, g, b)` input vector is
+        // gone — channels are selected by index with zero allocs. Same math.
+        val max = (size - 1).toFloat()
         for (c in 0..2) {
-            val pos = (inputs[c] * (size - 1)).coerceIn(0f, (size - 1).toFloat())
+            val input = when (c) {
+                0 -> r
+                1 -> g
+                else -> b
+            }
+            val pos = (input * (size - 1)).coerceIn(0f, max)
             val i0 = floor(pos).toInt().coerceIn(0, size - 1)
             val i1 = (i0 + 1).coerceAtMost(size - 1)
             val f = pos - i0

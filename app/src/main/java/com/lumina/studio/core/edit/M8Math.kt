@@ -32,13 +32,23 @@ object RetouchMath {
      * smooth areas; busy texture smears (documented in UI copy).
      */
     fun healPixel(tR: Float, tG: Float, tB: Float, mR: Float, mG: Float, mB: Float): FloatArray {
-        val tLum = luma(tR, tG, tB)
+        val out = FloatArray(3)
+        healPixelInto(tR, tG, tB, mR, mG, mB, out)
+        return out
+    }
+
+    /**
+     * M16 allocation-free variant (§34): writes the healed pixel into [out]
+     * (size >= 3), bit-identical to [healPixel]. Hot retouch loops must call
+     * this with a thread-local scratch buffer instead of allocating per pixel.
+     */
+    fun healPixelInto(
+        tR: Float, tG: Float, tB: Float, mR: Float, mG: Float, mB: Float, out: FloatArray
+    ) {
         val mLum = luma(mR, mG, mB)
-        return floatArrayOf(
-            (tR + (mR - mLum)).coerceIn(0f, 1f),
-            (tG + (mG - mLum)).coerceIn(0f, 1f),
-            (tB + (mB - mLum)).coerceIn(0f, 1f)
-        )
+        out[0] = (tR + (mR - mLum)).coerceIn(0f, 1f)
+        out[1] = (tG + (mG - mLum)).coerceIn(0f, 1f)
+        out[2] = (tB + (mB - mLum)).coerceIn(0f, 1f)
     }
 
     /**
@@ -206,11 +216,24 @@ object LensBlurMath {
      * 0.25, far above 0.75, mid bridges. Sums to ~1 (mid absorbs the slack).
      */
     fun bandWeights(depth: Float): FloatArray {
+        val out = FloatArray(3)
+        bandWeightsInto(depth, out)
+        return out
+    }
+
+    /**
+     * M16 allocation-free variant (§34): writes near/mid/far into [out]
+     * (size >= 3), bit-identical to [bandWeights]. The lens-blur pixel loop
+     * must call this with a thread-local scratch buffer.
+     */
+    fun bandWeightsInto(depth: Float, out: FloatArray) {
         val d = depth.coerceIn(0f, 1f)
         val near = 1f - GradeMath.smoothstep(0.25f, 0.45f, d)
         val far = GradeMath.smoothstep(0.55f, 0.75f, d)
         val mid = (1f - near - far).coerceIn(0f, 1f)
-        return floatArrayOf(near.coerceIn(0f, 1f), mid, far.coerceIn(0f, 1f))
+        out[0] = near.coerceIn(0f, 1f)
+        out[1] = mid
+        out[2] = far.coerceIn(0f, 1f)
     }
 
     /**
@@ -265,6 +288,10 @@ object DustMath {
         val gridH = (h + cell - 1) / cell
         val claimed = BooleanArray(gridW * gridH)
         val out = ArrayList<DustCandidate>(32)
+        // M16 (§34): the 16-sample outer ring buffer is hoisted out of the
+        // per-center loop (was `FloatArray(16)` per candidate center ≈ 65k
+        // allocs on a 256px analysis frame). Single reuse buffer, same values.
+        val ring = FloatArray(16)
         var n = 0
         // Stride 1: every pixel is evaluated as a candidate center (a
         // stride-2 scan would blind the detector to half the parities).
@@ -273,8 +300,8 @@ object DustMath {
             for (x in 3 until w - 3) {
                 val i = y * w + x
                 // Outer ring only (max(|dx|,|dy|) == 2): 16 samples that
-                // exclude the candidate dot itself.
-                val ring = FloatArray(16)
+                // exclude the candidate dot itself. [ring] is the hoisted
+                // M16 reuse buffer (always fully rewritten below).
                 var k = 0
                 var sum = 0f
                 for (dy in -2..2) {

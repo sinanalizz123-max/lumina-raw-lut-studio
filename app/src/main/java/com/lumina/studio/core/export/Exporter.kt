@@ -327,20 +327,57 @@ object Exporter {
         val w = bitmap.width
         val h = bitmap.height
         require(w > 0 && h > 0) { "Invalid bitmap dimensions: $w x $h" }
-        val pixels = IntArray(w * h)
-        bitmap.getPixels(pixels, 0, w, 0, 0, w, h)
-        val rgb = ByteArray(w * h * 3)
-        var o = 0
-        for (pixel in pixels) {
+        // M16: the IntArray + rgb ByteArray giant allocs can OOM on huge
+        // frames — convert to a catchable refusal so export paths surface
+        // "image too large" instead of crashing.
+        try {
+            val pixels = IntArray(w * h)
+            bitmap.getPixels(pixels, 0, w, 0, 0, w, h)
+            val rgb = ByteArray(w * h * 3)
+            var o = 0
+            for (pixel in pixels) {
             rgb[o++] = ((pixel shr 16) and 0xFF).toByte()
             rgb[o++] = ((pixel shr 8) and 0xFF).toByte()
             rgb[o++] = (pixel and 0xFF).toByte()
+            }
+            return rgb
+        } catch (_: OutOfMemoryError) {
+            throw IllegalStateException("Image too large for TIFF export on this device")
         }
-        return rgb
     }
 
-    fun encodeTiff(bitmap: Bitmap): ByteArray =
-        TiffWriter.encodeTiff(bitmap.width, bitmap.height, bitmapToRgb(bitmap))
+    /**
+     * M16 TIFF pre-flight (§3): refuse frames whose triple-copy working set
+     * (IntArray 4B/px + rgb 3B/px + file 3B/px) exceeds [capBytes] BEFORE any
+     * giant alloc. Null cap disables the check. Callers surface the returned
+     * string as the user-facing error; null means proceed.
+     */
+    fun checkTiffBudget(width: Int, height: Int, capBytes: Long?): String? {
+        if (capBytes == null || capBytes <= 0L) return null
+        if (width <= 0 || height <= 0) return "Invalid image dimensions"
+        return try {
+            if (com.lumina.studio.core.render.MemoryBudget.exceedsTiffBudget(width, height, capBytes)) {
+                "Image too large for TIFF export on this device — try JPEG or a smaller size"
+            } else {
+                null
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    fun encodeTiff(bitmap: Bitmap): ByteArray {
+        // M16: encodeTiff's single-strip bytes are golden-pinned (see
+        // TiffWriterTest); strip-export was assessed and rejected for parity
+        // (PERFORMANCE.md). OOM here becomes a catchable refusal.
+        try {
+            return TiffWriter.encodeTiff(bitmap.width, bitmap.height, bitmapToRgb(bitmap))
+        } catch (e: IllegalStateException) {
+            throw e
+        } catch (_: OutOfMemoryError) {
+            throw IllegalStateException("Image too large for TIFF export on this device")
+        }
+    }
 
     /**
      * M11 (§38 sharpen): small-radius unsharp mask on the export-size

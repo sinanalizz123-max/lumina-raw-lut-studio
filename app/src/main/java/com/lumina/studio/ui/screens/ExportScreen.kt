@@ -412,6 +412,10 @@ fun ExportScreen(navController: NavController, projectId: String? = null) {
                         EditHistoryLog.EXPORT
                     )
                 }
+            } catch (_: OutOfMemoryError) {
+                // M16: huge-frame encode/decode OOM surfaces as a message
+                // (never a crash); bitmap release still runs in finally.
+                error = "Image too large for this device — try JPEG or a smaller size"
             } catch (e: Exception) {
                 if (e is kotlinx.coroutines.CancellationException) throw e
                 error = e.message ?: "Export failed"
