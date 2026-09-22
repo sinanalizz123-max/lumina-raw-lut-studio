@@ -2599,7 +2599,21 @@ class EditorViewModel(application: Application, private val projectId: String?) 
             val params = _params.value
             val now = System.currentTimeMillis()
             val updated = current.withEditParams(params).copy(updatedAt = now)
-            withContext(Dispatchers.IO) { database.projectDao().upsert(updated) }
+            val rows = withContext(Dispatchers.IO) {
+                database.projectDao().updateEditState(
+                    id = current.id,
+                    updatedAt = updated.updatedAt,
+                    presetName = updated.presetName,
+                    editParamsJson = updated.editParamsJson
+                )
+            }
+            // Autosave must never recreate a project that was deleted while
+            // the debounce timer was waiting. Room UPDATE returns 0 when the
+            // row no longer exists, so discard the pending history as well.
+            if (rows == 0) {
+                pendingHistoryTags.clear()
+                return@launch
+            }
             _project.value = updated
             val tags = pendingHistoryTags.toList()
             pendingHistoryTags.clear()
