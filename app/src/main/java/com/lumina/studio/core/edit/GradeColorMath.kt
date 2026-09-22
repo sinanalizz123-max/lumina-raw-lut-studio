@@ -171,7 +171,7 @@ object GradeMath {
      */
     fun tintForInto(hueDeg: Float, sat: Float, out: FloatArray) {
         val s = sat.coerceIn(0f, 100f) / 100f
-        hslToRgbInto(GradeAdjust.wrapHue(hueDeg), s, 0.5f, out)
+        GradeHsl.hslToRgbInto(GradeAdjust.wrapHue(hueDeg), s, 0.5f, out)
     }
 
     fun zoneLift(adjust: GradeAdjust): FloatArray {
@@ -246,7 +246,7 @@ object GradeMath {
     private fun zoneLiftInto(adjust: GradeAdjust, out: FloatArray, buf: FloatArray, base: Int, tintBase: Int = 15) {
         val hue = GradeAdjust.wrapHue(adjust.hue)
         val s = adjust.sat.coerceIn(0f, 100f) / 100f
-        hslToRgbInto(hue, s, 0.5f, buf, tintBase)
+        GradeHsl.hslToRgbInto(hue, s, 0.5f, buf, tintBase)
         val k = (adjust.sat.coerceIn(0f, 100f) / 100f) * 2f
         val lum = adjust.lum.coerceIn(-100f, 100f) / 100f * 0.25f
         out[base] = (buf[tintBase] - 0.5f) * k + lum
