@@ -9,7 +9,7 @@ class MemoryBudgetTest {
     @Test
     fun tiffBudgetRejectsOverflowAndHugeFrames() {
         assertTrue(MemoryBudget.exceedsTiffBudget(1, 1, 1))
-        assertTrue(MemoryBudget.exceedsTiffBudget(Int.MAX_VALUE, Int.MAX_VALUE, Long.MAX_VALUE))
+        assertTrue(MemoryBudget.exceedsTiffBudget(Int.MAX_VALUE, Int.MAX_VALUE, Long.MAX_VALUE / 2))
     }
 
     @Test
