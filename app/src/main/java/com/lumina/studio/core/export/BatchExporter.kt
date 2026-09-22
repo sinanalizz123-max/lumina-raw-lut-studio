@@ -16,6 +16,7 @@ import com.lumina.studio.core.render.RenderSource
 import com.lumina.studio.core.render.cpu.RenderBackends
 import com.lumina.studio.core.util.ImageOrientation
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -61,32 +62,67 @@ object BatchExporter {
             ?: throw IllegalStateException("Photo is missing for “${project.name}”")
         val params = project.toEditParams()
         var full: Bitmap? = null
+        var rendered: Bitmap? = null
+        var spaced: Bitmap? = null
+        var sharpened: Bitmap? = null
         try {
+            ensureActive()
             full = decodeFull(app, source)
                 ?: throw IllegalStateException("Could not decode “${project.name}”")
+            ensureActive()
             val baseW = project.width.takeIf { it > 0 } ?: full.width
             val baseH = project.height.takeIf { it > 0 } ?: full.height
             val (targetW, targetH) = Exporter.targetDimensions(baseW, baseH, settings)
             val lut = com.lumina.studio.core.lut.LutRegistry.resolve(params.presetId)
-            val rendered = Exporter.renderForExport(full, params, lut, targetW, targetH)
-            val spaced = Exporter.withColorSpace(rendered, settings.colorSpace)
+            rendered = Exporter.renderForExport(full, params, lut, targetW, targetH)
+            ensureActive()
+            // M11: explicit upscale (renderer never upscales), per-format
+            // colorspace (TIFF coerces to sRGB), output sharpen post-resize.
+            val scaled = Exporter.upscaleIfAllowed(rendered, targetW, targetH, settings.allowUpscale)
+            if (scaled !== rendered && rendered !== full) runCatching { rendered.recycle() }
+            rendered = scaled
+            val effectiveSpace = Exporter.colorSpaceForFormat(settings.format, settings.colorSpace)
+            spaced = Exporter.withColorSpace(rendered, effectiveSpace)
             if (spaced !== rendered && rendered !== full) {
                 runCatching { rendered.recycle() }
+                rendered = null
             }
+            sharpened = Exporter.applyOutputSharpen(spaced, settings.outputSharpen)
+            if (sharpened !== spaced && spaced !== full) {
+                runCatching { spaced.recycle() }
+                spaced = null
+            }
+            ensureActive()
+            val finalFrame = sharpened
             val bytes = if (settings.format == ExportFormat.TIFF) {
-                Exporter.encodeTiff(spaced)
+                Exporter.encodeTiff(finalFrame)
+            } else if (settings.format == ExportFormat.HEIC) {
+                Exporter.encodeHeic(finalFrame, settings.effectiveQuality(), app.cacheDir)
             } else {
-                Exporter.compress(spaced, settings)
+                Exporter.compress(finalFrame, settings)
             }
-            if (spaced !== full) runCatching { spaced.recycle() }
+            ensureActive()
             val withExif = Exporter.withSourceExif(app, bytes, settings, source)
             val name = Exporter.displayName(settings.format)
-            val uri = Exporter.saveToGallery(app, withExif, settings.format, name)
+            // M11: validated publish transaction (temp -> validate ->
+            // metadata -> MediaStore pending -> finalize). HEIC validates
+            // the even-padded frame the decoder reopens.
+            val (expW, expH) = if (settings.format == ExportFormat.HEIC) {
+                Exporter.evenDims(finalFrame.width, finalFrame.height)
+            } else {
+                finalFrame.width to finalFrame.height
+            }
+            val uri = Exporter.publishBytes(
+                app, withExif, settings.format, name, expW, expH
+            )
             runCatching {
                 EditHistoryLog.log(db, projectId, EditHistoryLog.EXPORT)
             }
             uri
         } finally {
+            runCatching { sharpened?.takeIf { it !== full }?.recycle() }
+            runCatching { spaced?.takeIf { it !== full }?.recycle() }
+            runCatching { rendered?.takeIf { it !== full }?.recycle() }
             runCatching { full?.recycle() }
         }
     }
@@ -112,7 +148,9 @@ object BatchExporter {
                     BitmapFactory.decodeStream(input, null, opts)
                 }
             }
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            // M11 (§39): never swallow cancellation on export paths.
+            if (e is kotlinx.coroutines.CancellationException) throw e
             null
         }
     }

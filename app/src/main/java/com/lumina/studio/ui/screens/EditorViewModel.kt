@@ -472,7 +472,9 @@ class EditorViewModel(application: Application, private val projectId: String?) 
                     BitmapFactory.decodeStream(input, null, opts)
                 }
             }
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            // M11 (§39): never swallow cancellation on export decode paths.
+            if (e is kotlinx.coroutines.CancellationException) throw e
             null
         }
     }

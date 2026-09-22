@@ -80,10 +80,12 @@ import com.lumina.studio.core.export.Exporter
 import com.lumina.studio.core.export.QualityPreset
 import com.lumina.studio.core.export.ResolutionMode
 import com.lumina.studio.core.export.Sidecar
+import com.lumina.studio.core.util.ExifReader
 import com.lumina.studio.core.lut.LutLimits
 import com.lumina.studio.core.lut.LutRegistry
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -150,6 +152,23 @@ fun ExportScreen(navController: NavController, projectId: String? = null) {
     var sidecarUri by remember { mutableStateOf<Uri?>(null) }
     var rawError by remember { mutableStateOf<String?>(null) }
     var sidecarNotice by remember { mutableStateOf<String?>(null) }
+    // M11 (§39): RAW/sidecar jobs are cancellable (previously fire-and-forget).
+    var rawJob by remember { mutableStateOf<Job?>(null) }
+    var sidecarJob by remember { mutableStateOf<Job?>(null) }
+    // M11 (§38 formats): encoder-gated availability drives the format rows —
+    // HEIC/WebP rows appear only when the device can encode them (no dead UI).
+    val webpAvailable = remember { Exporter.hasWebpEncoder() }
+    val heicAvailable = remember { Exporter.hasHeicEncoder() }
+    val availableFormats = remember(webpAvailable, heicAvailable) {
+        Exporter.availableFormats(webpAvailable, heicAvailable)
+    }
+    // M11 (§36 metadata): source EXIF summary for the export card — focal
+    // length display plus GPS presence (ExifReader already parses both).
+    val sourceExif = remember(project) {
+        project?.photoUri?.let { java.io.File(it) }?.takeIf { it.exists() }?.let {
+            runCatching { ExifReader.read(it) }.getOrNull()
+        }
+    }
 
     val sidecarPicker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
@@ -217,6 +236,12 @@ fun ExportScreen(navController: NavController, projectId: String? = null) {
         ?: preview?.width ?: 0
     val fullH = project?.height?.takeIf { it > 0 }
         ?: preview?.height ?: 0
+    // M11: coerce a persisted/unavailable format back to JPEG (no dead UI).
+    LaunchedEffect(availableFormats) {
+        if (settings.format !in availableFormats) {
+            settings = settings.copy(format = ExportFormat.JPEG)
+        }
+    }
     val (targetW, targetH) = Exporter.targetDimensions(fullW, fullH, settings)
     val isRaw = remember(project) { Exporter.isRawSource(project) }
 
@@ -228,10 +253,22 @@ fun ExportScreen(navController: NavController, projectId: String? = null) {
         val bmp = preview ?: return@LaunchedEffect
         estimatedBytes = withContext(Dispatchers.Default) {
             try {
-                val trial = Exporter.compress(bmp, settings)
-                val trialPixels = (bmp.width * bmp.height).toLong()
-                val fullPixels = (fullW * fullH).toLong().coerceAtLeast(trialPixels)
-                Exporter.estimateBytes(trial.size.toLong(), trialPixels, fullPixels)
+                ensureActive()
+                if (settings.format == ExportFormat.HEIC) {
+                    // M11: no cheap HEIC trial path — scale a JPEG trial.
+                    val trial = Exporter.compress(
+                        bmp,
+                        settings.copy(format = ExportFormat.JPEG)
+                    )
+                    val trialPixels = (bmp.width * bmp.height).toLong()
+                    val fullPixels = (fullW * fullH).toLong().coerceAtLeast(trialPixels)
+                    Exporter.estimateHeicBytes(trial.size.toLong(), trialPixels, fullPixels)
+                } else {
+                    val trial = Exporter.compress(bmp, settings)
+                    val trialPixels = (bmp.width * bmp.height).toLong()
+                    val fullPixels = (fullW * fullH).toLong().coerceAtLeast(trialPixels)
+                    Exporter.estimateBytes(trial.size.toLong(), trialPixels, fullPixels)
+                }
             } catch (_: Exception) {
                 0L
             }
@@ -246,33 +283,82 @@ fun ExportScreen(navController: NavController, projectId: String? = null) {
         progress = 0f
         exportJob = scope.launch {
             var full: Bitmap? = null
+            var rendered: Bitmap? = null
+            var spaced: Bitmap? = null
+            var sharpened: Bitmap? = null
             try {
                 progress = 0.1f
                 full = vm.renderFullBitmap()
                     ?: throw IllegalStateException("Could not decode the full-resolution photo")
+                ensureActive()
                 progress = 0.45f
                 val lut = vm.currentLut()
-                val rendered = withContext(Dispatchers.Default) {
-                    Exporter.renderForExport(full, vm.params.value, lut, targetW, targetH)
-                }
-                progress = 0.65f
+                val fullFrame = full
                 val currentSettings = settings
-                val spaced = withContext(Dispatchers.Default) {
-                    Exporter.withColorSpace(rendered, currentSettings.colorSpace)
+                rendered = withContext(Dispatchers.Default) {
+                    ensureActive()
+                    Exporter.renderForExport(fullFrame, vm.params.value, lut, targetW, targetH)
                 }
-                if (spaced !== rendered && rendered !== full) rendered.recycle()
+                progress = 0.6f
+                // M11 (§38+§36): explicit upscale (renderer never upscales),
+                // per-format colorspace (TIFF coerces to sRGB), output
+                // sharpen post-resize pre-encode (0 = off, same instance).
+                val upscaled = withContext(Dispatchers.Default) {
+                    ensureActive()
+                    Exporter.upscaleIfAllowed(rendered!!, targetW, targetH, currentSettings.allowUpscale)
+                }
+                if (upscaled !== rendered && rendered !== full) runCatching { rendered!!.recycle() }
+                rendered = upscaled
+                progress = 0.65f
+                val effectiveSpace =
+                    Exporter.colorSpaceForFormat(currentSettings.format, currentSettings.colorSpace)
+                val renderedFrame = rendered
+                spaced = withContext(Dispatchers.Default) {
+                    ensureActive()
+                    Exporter.withColorSpace(renderedFrame!!, effectiveSpace)
+                }
+                if (spaced !== rendered && rendered !== full) {
+                    runCatching { rendered!!.recycle() }
+                    rendered = null
+                }
+                sharpened = withContext(Dispatchers.Default) {
+                    ensureActive()
+                    Exporter.applyOutputSharpen(spaced!!, currentSettings.outputSharpen)
+                }
+                if (sharpened !== spaced && spaced !== full) {
+                    runCatching { spaced!!.recycle() }
+                    spaced = null
+                }
+                val finalFrame = sharpened!!
                 val bytes = withContext(Dispatchers.Default) {
-                    if (currentSettings.format == ExportFormat.TIFF) Exporter.encodeTiff(spaced)
-                    else Exporter.compress(spaced, currentSettings)
+                    ensureActive()
+                    if (currentSettings.format == ExportFormat.TIFF) Exporter.encodeTiff(finalFrame)
+                    else if (currentSettings.format == ExportFormat.HEIC) {
+                        Exporter.encodeHeic(
+                            finalFrame, currentSettings.effectiveQuality(), context.cacheDir
+                        )
+                    } else Exporter.compress(finalFrame, currentSettings)
                 }
-                if (spaced !== full) spaced.recycle()
                 progress = 0.8f
+                // M11: HEIC pads odd dims to even (YUV420) — validate the
+                // padded frame the decoder will actually reopen.
+                val (expW, expH) = if (currentSettings.format == ExportFormat.HEIC) {
+                    Exporter.evenDims(finalFrame.width, finalFrame.height)
+                } else {
+                    finalFrame.width to finalFrame.height
+                }
                 val withExif = withContext(Dispatchers.Default) {
+                    ensureActive()
                     Exporter.withSourceExif(context, bytes, currentSettings, vm.baseSourcePath())
                 }
                 progress = 0.9f
                 val name = Exporter.displayName(currentSettings.format)
-                val uri = Exporter.saveToGallery(context, withExif, currentSettings.format, name)
+                // M11 (§39+§94): validated publish transaction — temp file,
+                // validate, metadata, MediaStore pending, finalize. Failures
+                // delete temp + incomplete item; project stays intact.
+                val uri = Exporter.publishBytes(
+                    context, withExif, currentSettings.format, name, expW, expH
+                )
                 savedUri = uri
                 savedName = name
                 progress = 1f
@@ -288,6 +374,9 @@ fun ExportScreen(navController: NavController, projectId: String? = null) {
                 error = e.message ?: "Export failed"
             } finally {
                 try {
+                    sharpened?.let { if (it !== full) it.recycle() }
+                    spaced?.let { if (it !== full) it.recycle() }
+                    rendered?.let { if (it !== full) it.recycle() }
                     full?.recycle()
                 } catch (_: Exception) {
                 }
@@ -301,11 +390,12 @@ fun ExportScreen(navController: NavController, projectId: String? = null) {
         if (rawBusy) return
         rawError = null
         rawBusy = true
-        scope.launch {
+        rawJob = scope.launch {
             try {
                 val source = vm.baseSourcePath()
                 val name = Exporter.rawOriginalName(source)
                 rawUri = withContext(Dispatchers.IO) {
+                    ensureActive()
                     Exporter.exportRawOriginal(context, source, name)
                 }
                 runCatching {
@@ -320,6 +410,7 @@ fun ExportScreen(navController: NavController, projectId: String? = null) {
                 rawError = e.message ?: "RAW export failed"
             } finally {
                 rawBusy = false
+                rawJob = null
             }
         }
     }
@@ -328,12 +419,13 @@ fun ExportScreen(navController: NavController, projectId: String? = null) {
         if (rawBusy) return
         rawError = null
         rawBusy = true
-        scope.launch {
+        sidecarJob = scope.launch {
             try {
                 val source = vm.baseSourcePath()
                 val rawName = Exporter.rawOriginalName(source)
                 val sidecarName = Exporter.sidecarNameFor(rawName)
                 sidecarUri = withContext(Dispatchers.IO) {
+                    ensureActive()
                     Exporter.exportSidecar(context, vm.params.value, sidecarName, rawName)
                 }
                 runCatching {
@@ -348,6 +440,7 @@ fun ExportScreen(navController: NavController, projectId: String? = null) {
                 rawError = e.message ?: "Sidecar export failed"
             } finally {
                 rawBusy = false
+                sidecarJob = null
             }
         }
     }
@@ -465,6 +558,15 @@ fun ExportScreen(navController: NavController, projectId: String? = null) {
                                 .fillMaxWidth()
                                 .heightIn(min = 48.dp)
                         ) { Text("Import recipe (.json)") }
+                        if (rawBusy) {
+                            TextButton(
+                                onClick = {
+                                    rawJob?.cancel()
+                                    sidecarJob?.cancel()
+                                },
+                                modifier = Modifier.heightIn(min = 48.dp)
+                            ) { Text("Cancel") }
+                        }
                         if (rawUri != null) {
                             Text(
                                 rawUri.toString(),
@@ -513,24 +615,22 @@ fun ExportScreen(navController: NavController, projectId: String? = null) {
                     Text("Format", style = LuminaSectionHeaderTextStyle)
                     Spacer(modifier = Modifier.height(4.dp))
                     Column(modifier = Modifier.selectableGroup()) {
-                        FormatRow(
-                            label = "JPEG",
-                            selected = settings.format == ExportFormat.JPEG,
-                            enabled = true,
-                            onClick = { settings = settings.copy(format = ExportFormat.JPEG) }
-                        )
-                        FormatRow(
-                            label = "PNG",
-                            selected = settings.format == ExportFormat.PNG,
-                            enabled = true,
-                            onClick = { settings = settings.copy(format = ExportFormat.PNG) }
-                        )
-                        FormatRow(
-                            label = "TIFF",
-                            selected = settings.format == ExportFormat.TIFF,
-                            enabled = true,
-                            onClick = { settings = settings.copy(format = ExportFormat.TIFF) }
-                        )
+                        // M11: rows driven by encoder availability — WebP/HEIC
+                        // appear only when the device can encode them.
+                        for (format in availableFormats) {
+                            FormatRow(
+                                label = when (format) {
+                                    ExportFormat.JPEG -> "JPEG"
+                                    ExportFormat.PNG -> "PNG"
+                                    ExportFormat.TIFF -> "TIFF"
+                                    ExportFormat.WEBP -> "WebP"
+                                    ExportFormat.HEIC -> "HEIC"
+                                },
+                                selected = settings.format == format,
+                                enabled = true,
+                                onClick = { settings = settings.copy(format = format) }
+                            )
+                        }
                     }
                     if (settings.format == ExportFormat.PNG) {
                         Text(
@@ -546,6 +646,20 @@ fun ExportScreen(navController: NavController, projectId: String? = null) {
                             color = LuminaMuted
                         )
                     }
+                    if (settings.format == ExportFormat.WEBP) {
+                        Text(
+                            "WebP is lossless at quality 100, lossy below.",
+                            style = LuminaCaptionTextStyle,
+                            color = LuminaMuted
+                        )
+                    }
+                    if (settings.format == ExportFormat.HEIC) {
+                        Text(
+                            "HEIC needs a device encoder — hidden where unsupported.",
+                            style = LuminaCaptionTextStyle,
+                            color = LuminaMuted
+                        )
+                    }
                     if (isRaw) {
                         Text(
                             "Rendered pixels — cannot be converted back to RAW.",
@@ -556,7 +670,10 @@ fun ExportScreen(navController: NavController, projectId: String? = null) {
                 }
             }
 
-            if (settings.format == ExportFormat.JPEG) {
+            if (settings.format == ExportFormat.JPEG ||
+                settings.format == ExportFormat.WEBP ||
+                settings.format == ExportFormat.HEIC
+            ) {
                 Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(16.dp),
@@ -597,7 +714,7 @@ fun ExportScreen(navController: NavController, projectId: String? = null) {
                             )
                         } else {
                             Text(
-                                "JPEG quality ${settings.effectiveQuality()}",
+                                "${settings.format.name} quality ${settings.effectiveQuality()}",
                                 style = LuminaCaptionTextStyle,
                                 color = LuminaMuted
                             )
@@ -644,8 +761,73 @@ fun ExportScreen(navController: NavController, projectId: String? = null) {
                             color = LuminaMuted
                         )
                     }
+                    // M11 (§38 size): longest-edge control. When set (>0) it
+                    // is the single size control (Custom max-dim ignored);
+                    // aspect-locked, no custom width/height by design.
+                    ProSlider(
+                        label = "Longest edge",
+                        value = settings.longestEdge.toFloat(),
+                        onValueChange = {
+                            settings = settings.copy(longestEdge = it.roundToInt())
+                        },
+                        valueRange = Exporter.LONGEST_EDGE_OFF.toFloat()..Exporter.MAX_LONGEST_EDGE.toFloat(),
+                        displayValue = if (settings.longestEdge <= Exporter.LONGEST_EDGE_OFF) {
+                            "Off"
+                        } else {
+                            "${settings.longestEdge} px"
+                        }
+                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "Allow upscale",
+                            modifier = Modifier.weight(1f),
+                            style = LuminaSectionHeaderTextStyle,
+                            color = LuminaOnSurface
+                        )
+                        Switch(
+                            checked = settings.allowUpscale,
+                            enabled = settings.longestEdge > Exporter.LONGEST_EDGE_OFF,
+                            onCheckedChange = { settings = settings.copy(allowUpscale = it) }
+                        )
+                    }
+                    Text(
+                        "Longest-edge fit keeps the aspect ratio and never upscales unless allowed.",
+                        style = LuminaCaptionTextStyle,
+                        color = LuminaMuted
+                    )
                     Text(
                         "Exports at $targetW × $targetH",
+                        style = LuminaCaptionTextStyle,
+                        color = LuminaMuted
+                    )
+                }
+            }
+
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = LuminaSurfaceContainerLow)
+            ) {
+                Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                    Text("Output sharpening", style = LuminaSectionHeaderTextStyle)
+                    ProSlider(
+                        label = "Sharpen for output",
+                        value = settings.outputSharpen.toFloat(),
+                        onValueChange = {
+                            settings = settings.copy(outputSharpen = it.roundToInt())
+                        },
+                        valueRange = 0f..100f,
+                        displayValue = if (settings.outputSharpen == 0) "Off"
+                        else settings.outputSharpen.toString()
+                    )
+                    Text(
+                        "Small-radius unsharp applied once at export size, before encoding. Off at 0.",
                         style = LuminaCaptionTextStyle,
                         color = LuminaMuted
                     )
@@ -698,6 +880,15 @@ fun ExportScreen(navController: NavController, projectId: String? = null) {
                             style = LuminaCaptionTextStyle,
                             color = LuminaMuted
                         )
+                        if (settings.format == ExportFormat.TIFF &&
+                            settings.colorSpace == ExportColorSpace.DISPLAY_P3
+                        ) {
+                            Text(
+                                "TIFF is an untagged sRGB container — P3 coerces to sRGB for TIFF.",
+                                style = LuminaCaptionTextStyle,
+                                color = LuminaMuted
+                            )
+                        }
                     } else {
                         Text(
                             "sRGB",
@@ -728,12 +919,42 @@ fun ExportScreen(navController: NavController, projectId: String? = null) {
                             color = LuminaOnSurface
                         )
                         Switch(
-                            checked = settings.preserveExif,
+                            checked = settings.preserveExif && !settings.stripMetadata,
+                            enabled = !settings.stripMetadata,
                             onCheckedChange = { settings = settings.copy(preserveExif = it) }
                         )
                     }
                     Text(
-                        "Copies camera metadata from the source into JPEG exports when available.",
+                        "Copies camera metadata from the source into JPEG, WebP and HEIC exports when available. PNG and TIFF stay clean by construction.",
+                        style = LuminaCaptionTextStyle,
+                        color = LuminaMuted
+                    )
+                    // M11 (§36): explicit per-export "Remove location" toggle
+                    // (inverse of the persisted include-location key) plus
+                    // "Strip all metadata" for a clean file with no EXIF.
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "Remove location",
+                            modifier = Modifier.weight(1f),
+                            style = LuminaSectionHeaderTextStyle,
+                            color = LuminaOnSurface
+                        )
+                        Switch(
+                            checked = settings.removeLocation || settings.stripMetadata,
+                            enabled = !settings.stripMetadata,
+                            onCheckedChange = {
+                                settings = settings.copy(includeLocation = !it)
+                                scope.launch {
+                                    runCatching { settingsRepository.setExportIncludeLocation(!it) }
+                                }
+                            }
+                        )
+                    }
+                    Text(
+                        "On by default for privacy — GPS tags are stripped from exports and shares when on.",
                         style = LuminaCaptionTextStyle,
                         color = LuminaMuted
                     )
@@ -742,26 +963,40 @@ fun ExportScreen(navController: NavController, projectId: String? = null) {
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            "Include location metadata",
+                            "Strip all metadata",
                             modifier = Modifier.weight(1f),
                             style = LuminaSectionHeaderTextStyle,
                             color = LuminaOnSurface
                         )
                         Switch(
-                            checked = settings.includeLocation,
-                            onCheckedChange = {
-                                settings = settings.copy(includeLocation = it)
-                                scope.launch {
-                                    runCatching { settingsRepository.setExportIncludeLocation(it) }
-                                }
-                            }
+                            checked = settings.stripMetadata,
+                            onCheckedChange = { settings = settings.copy(stripMetadata = it) }
                         )
                     }
                     Text(
-                        "Off by default for privacy — GPS tags are stripped from exports and shares when off.",
+                        "Writes a clean file with no EXIF. Orientation is always normal on export.",
                         style = LuminaCaptionTextStyle,
                         color = LuminaMuted
                     )
+                    // M11 (§36): export summary — focal length + GPS state.
+                    sourceExif?.focalLength?.let {
+                        Text(
+                            "Focal length: $it",
+                            style = LuminaCaptionTextStyle,
+                            color = LuminaMuted
+                        )
+                    }
+                    if (sourceExif?.hasGps == true) {
+                        Text(
+                            if (settings.removeLocation || settings.stripMetadata) {
+                                "Location: present in source, removed from this export"
+                            } else {
+                                "Location: present in source, included in this export"
+                            },
+                            style = LuminaCaptionTextStyle,
+                            color = LuminaMuted
+                        )
+                    }
                     Spacer(modifier = Modifier.height(8.dp))
                     Text(
                         "Saves to MediaStore › Pictures › Lumina as ${Exporter.displayName(settings.format)}",
