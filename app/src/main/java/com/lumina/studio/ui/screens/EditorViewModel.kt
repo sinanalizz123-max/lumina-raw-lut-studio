@@ -2584,6 +2584,16 @@ class EditorViewModel(application: Application, private val projectId: String?) 
         } catch (_: Exception) {
         }
         _fullscreenPreview.value = null
+        try {
+            baseBitmap?.takeIf { !it.isRecycled }?.recycle()
+        } catch (_: Exception) {
+        }
+        baseBitmap = null
+        try {
+            _preview.value?.takeIf { !it.isRecycled }?.recycle()
+        } catch (_: Exception) {
+        }
+        _preview.value = null
         // M15: drop GL context/textures/FBO on owner teardown (lazy re-init
         // on next GPU render; in-flight renders already hold their bitmaps).
         // A shared ComponentCallbacks2 trim hook is attached in init for
