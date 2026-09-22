@@ -41,32 +41,11 @@ enum class RenderColorSpace {
     DISPLAY_P3
 }
 
-/**
- * M5 precision selector for the CPU pipeline (§10, §14).
- *
- * - PREVIEW: interactive path. sRGB-math in [Bitmap.Config.ARGB_8888]
- *   intermediates (8-bit store, float compute). Fast; rounds fractional stage
- *   output to 8-bit between stages.
- * - FINAL: high-quality path (export + fullscreen/zoom-tile final). Same
- *   sRGB-math recipe, but intermediates use [Bitmap.Config.RGBA_F16]
- *   (minSdk 26, so no version gate needed; OOM still falls back to 8888).
- *   Half-float stores 8-bit integers exactly and keeps fractional matrix-stage
- *   output that PREVIEW would round away, reducing banding in LUT trilinear +
- *   curves + HSL chains. Final store is still 8-bit for encode/display.
- *
- * Both qualities run the identical stage order and recipe
- * ([PreviewRenderer.render]); FINAL is not a different look, only less
- * quantization. [ColorPipeline.FINAL_PREVIEW_MAX_DELTA] bounds the visible
- * difference on test ramps.
- */
 enum class RenderQuality {
     PREVIEW,
     FINAL
 }
 
-// M5: target -> quality mapping. Preview/Thumb stay interactive (PREVIEW);
-// Fullscreen/Tile-final/Export take the high-precision path (FINAL).
-// Pure function (no android.*) so JVM tests can pin the mapping.
 fun qualityForTarget(target: RenderTarget): RenderQuality = when (target) {
     is RenderTarget.Preview -> RenderQuality.PREVIEW
     is RenderTarget.Thumb -> RenderQuality.PREVIEW
@@ -79,28 +58,11 @@ object MemoryBudget {
     const val BYTES_PER_PIXEL_ARGB_8888 = 4L
     const val BYTES_PER_PIXEL_RGB_TIFF = 3L
     const val MAX_RENDER_PIXELS = 120_000_000L
-
-    // M16 large-image policy (§3): tile-first above TILE_FIRST_PIXELS, decode
-    // caps per surface, graceful refusal above MAX_RENDER_PIXELS. Values are
-    // pure pixel math (no android.*) so JVM tests pin them; see
-    // PERFORMANCE.md for the on-device byte budgets.
     const val PIXELS_12MP = 12_000_000L
     const val PIXELS_24MP = 24_000_000L
     const val PIXELS_48MP = 48_000_000L
-
-    /** Above this, zoom/fullscreen prefer region-decode tiles over full frames. */
     const val TILE_FIRST_PIXELS = PIXELS_12MP
 
-    /**
-     * M16 TIFF triple-copy budget (§3): bitmapToRgb holds IntArray(4B/px) +
-     * rgb ByteArray(3B/px) while encodeTiff allocates the file image
-     * (3B/px + overhead). Pre-flight refusal before ANY giant alloc, so a
-     * 48MP TIFF (192MB + 144MB + 144MB) surfaces "image too large" instead
-     * of an OOM crash. Strip-export was assessed and rejected: TiffWriter's
-     * single-strip bytes are golden-pinned (offset 180, exact length), so a
-     * multi-strip rewrite would break parity for no on-device gain without
-     * a streaming file writer (see PERFORMANCE.md).
-     */
     fun tiffWorkingBytes(width: Int, height: Int): Long {
         if (width <= 0 || height <= 0) return 0L
         val pixels = saturatingMultiply(width.toLong(), height.toLong())
@@ -111,36 +73,37 @@ object MemoryBudget {
         )
     }
 
-    /** True when the TIFF path would exceed [capBytes] working memory. */
     fun exceedsTiffBudget(width: Int, height: Int, capBytes: Long): Boolean {
         if (width <= 0 || height <= 0 || capBytes <= 0L) return false
         return tiffWorkingBytes(width, height) > capBytes
     }
 
-    /**
-     * M16 strip math (pure): row count per horizontal band so each band's
-     * pixel buffer stays under [maxStripBytes]. Returns at least 1 row and
-     * at most [height]. Used by documentation/tests; the single-strip TIFF
-     * writer stays authoritative for output bytes.
-     */
-    fun stripRowsFor(width: Int, height: Int, maxStripBytes: Long, bytesPerPixel: Long = BYTES_PER_PIXEL_ARGB_8888): Int {
-        if (width <= 0 || height <= 0 || maxStripBytes <= 0L || bytesPerPixel <= 0L) return height.coerceAtLeast(1)
+    fun stripRowsFor(
+        width: Int,
+        height: Int,
+        maxStripBytes: Long,
+        bytesPerPixel: Long = BYTES_PER_PIXEL_ARGB_8888
+    ): Int {
+        if (width <= 0 || height <= 0 || maxStripBytes <= 0L || bytesPerPixel <= 0L) {
+            return height.coerceAtLeast(1)
+        }
         val rowBytes = width.toLong() * bytesPerPixel
         if (rowBytes <= 0L) return height
-        // Clamp in Long BEFORE toInt: huge caps (e.g. Long.MAX_VALUE) would
-        // otherwise overflow Int and collapse to 1 (M16 CI fix).
         return (maxStripBytes / rowBytes).coerceIn(1L, height.toLong()).toInt()
     }
 
     /**
-     * M16 decode-sample math (pure): power-of-two inSampleSize so the
-     * longest edge fits in [maxDim]. Mirrors BitmapFactoryDecoder behavior
-     * for tests without android.*.
+     * Returns a positive power-of-two sample. The largest representable
+     * inSampleSize is 2^30; for the theoretical Int.MAX_VALUE edge case,
+     * that is the safe ceiling without overflowing an Int.
      */
     fun sampleFor(longestEdge: Int, maxDim: Int): Int {
         if (longestEdge <= 0 || maxDim <= 0) return 1
         var sample = 1
-        while (longestEdge / sample > maxDim) sample *= 2
+        while (longestEdge.toLong() / sample.toLong() > maxDim.toLong()) {
+            if (sample >= (1 shl 30)) return (1 shl 30)
+            sample = sample shl 1
+        }
         return sample
     }
 
@@ -177,10 +140,7 @@ class GenerationTracker {
     private val counter = AtomicLong(0L)
 
     fun next(): Long = counter.incrementAndGet()
-
     fun current(): Long = counter.get()
-
     fun isCurrent(generation: Long): Boolean = generation == counter.get()
-
     fun isStale(generation: Long): Boolean = generation != counter.get()
 }
