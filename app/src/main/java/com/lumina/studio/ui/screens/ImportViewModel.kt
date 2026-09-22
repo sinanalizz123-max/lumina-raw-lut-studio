@@ -85,24 +85,29 @@ class ImportViewModel(application: Application) : AndroidViewModel(application) 
                 runCatching {
                     val app = getApplication<Application>()
                     val projectId = UUID.randomUUID().toString()
-                    val file = ProjectStore.saveBitmapToOriginal(app, projectId, bitmap, baseName)
-                        ?: throw IllegalStateException("Could not save camera photo")
-                    val bounds = ImageFiles.decodeBounds(file)
-                    val now = System.currentTimeMillis()
-                    val project = Project(
-                        id = projectId,
-                        name = "$baseName.jpg",
-                        photoUri = file.absolutePath,
-                        createdAt = now,
-                        updatedAt = now,
-                        fileType = "JPEG",
-                        mimeType = "image/jpeg",
-                        width = bounds.width,
-                        height = bounds.height
-                    )
-                    database.projectDao().upsert(project)
-                    EditHistoryLog.log(database, project.id, EditHistoryLog.IMPORT)
-                    ImportResult.Success(project.id, false, ExifInfo())
+                    try {
+                        val file = ProjectStore.saveBitmapToOriginal(app, projectId, bitmap, baseName)
+                            ?: throw IllegalStateException("Could not save camera photo")
+                        val bounds = ImageFiles.decodeBounds(file)
+                        val now = System.currentTimeMillis()
+                        val project = Project(
+                            id = projectId,
+                            name = "$baseName.jpg",
+                            photoUri = file.absolutePath,
+                            createdAt = now,
+                            updatedAt = now,
+                            fileType = "JPEG",
+                            mimeType = "image/jpeg",
+                            width = bounds.width,
+                            height = bounds.height
+                        )
+                        database.projectDao().upsert(project)
+                        EditHistoryLog.log(database, project.id, EditHistoryLog.IMPORT)
+                        ImportResult.Success(project.id, false, ExifInfo())
+                    } catch (e: Exception) {
+                        runCatching { ProjectStore.deleteProjectFiles(app, projectId) }
+                        throw e
+                    }
                 }.getOrElse { e -> ImportResult.Error(e.message ?: "Import failed") }
             }
             when (result) {
@@ -170,6 +175,7 @@ class ImportViewModel(application: Application) : AndroidViewModel(application) 
         val projectId = UUID.randomUUID().toString()
         val cached: File = ProjectStore.copyUriToOriginal(context, projectId, uri, displayName)
             ?: return ImportResult.Error("Could not read that file.")
+        try {
         var previewOnly = staticPreviewOnly
         var previewNote = staticNote
         if (extension == "dng") {
