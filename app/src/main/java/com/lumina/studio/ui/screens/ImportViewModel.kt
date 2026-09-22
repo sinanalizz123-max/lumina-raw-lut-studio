@@ -208,11 +208,17 @@ class ImportViewModel(application: Application) : AndroidViewModel(application) 
             } catch (_: Exception) {
                 return null
             }
-            if (len <= 0L || len > 120_000_000L) return null
+            // DngParser requires a complete byte array today because TIFF strip
+            // offsets are validated against the complete file. Never allocate a
+            // large RAW just for an informational import-time capability probe.
+            val maxProbeBytes = 32_000_000L
+            if (len <= 0L || len > maxProbeBytes) {
+                return Pair(false, "RAW capability will be checked when opened")
+            }
             val bytes = try {
                 file.readBytes()
             } catch (_: OutOfMemoryError) {
-                return null
+                return Pair(false, "RAW capability will be checked when opened")
             } catch (_: Exception) {
                 return null
             }
