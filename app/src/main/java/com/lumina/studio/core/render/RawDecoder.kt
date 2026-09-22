@@ -14,7 +14,8 @@ data class RawCapability(
 
 object RawCapabilities {
     const val DNG_PREVIEW_NOTE =
-        "Embedded preview only — sensor data preserved untouched; full demosaic lands in M9"
+        "DNG preview by default — uncompressed sensor data develops to editable pixels; " +
+            "JPEG-compressed DNG stays embedded-preview only, sensor data preserved untouched"
     const val PROPRIETARY_NOTE =
         "Embedded preview only — proprietary RAW is not fully decoded"
 
@@ -45,4 +46,5 @@ object RawCapabilities {
 interface RawDecoder<B : Any> {
     fun capabilities(): List<RawCapability>
     fun develop(source: RenderSource, maxDim: Int, recipe: RawRecipe? = null): B?
+    fun isDevelopedRaw(source: RenderSource): Boolean = false
 }

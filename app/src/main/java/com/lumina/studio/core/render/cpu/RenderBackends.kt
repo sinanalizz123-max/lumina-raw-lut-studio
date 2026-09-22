@@ -20,7 +20,7 @@ object RenderBackends {
     private var decoderApp: Context? = null
 
     @Volatile
-    private var rawInstance: DngPreviewDecoder? = null
+    private var rawInstance: DngDevelopDecoder? = null
 
     @Volatile
     private var rawApp: Context? = null
@@ -68,7 +68,7 @@ object RenderBackends {
             synchronized(this) {
                 current = rawInstance
                 if (current == null || rawApp !== app) {
-                    current = DngPreviewDecoder(app)
+                    current = DngDevelopDecoder(app)
                     rawInstance = current
                     rawApp = app
                 }

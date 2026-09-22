@@ -5,6 +5,11 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import androidx.core.net.toUri
 import androidx.exifinterface.media.ExifInterface
+import com.lumina.studio.core.raw.DevelopResult
+import com.lumina.studio.core.raw.DngCapabilities
+import com.lumina.studio.core.raw.DngDevelop
+import com.lumina.studio.core.raw.DngParseResult
+import com.lumina.studio.core.raw.DngParser
 import com.lumina.studio.core.render.PreviewRenderer
 import com.lumina.studio.core.render.RawCapabilities
 import com.lumina.studio.core.render.RawCapability
@@ -115,6 +120,144 @@ class DngPreviewDecoder(private val appContext: Context) : RawDecoder<Bitmap> {
 
     companion object {
         const val EXT_DNG = "dng"
+    }
+}
+
+class DngDevelopDecoder(private val appContext: Context) : RawDecoder<Bitmap> {
+
+    private val previewFallback = DngPreviewDecoder(appContext)
+
+    override fun capabilities(): List<RawCapability> = RawCapabilities.TABLE
+
+    override fun isDevelopedRaw(source: RenderSource): Boolean {
+        return try {
+            val bytes = readSourceBytes(source, forProbe = true) ?: return false
+            val parsed = DngParser.parse(bytes) as? DngParseResult.Ok ?: return false
+            DngCapabilities.developability(parsed.info).developable
+        } catch (_: OutOfMemoryError) {
+            false
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    override fun develop(source: RenderSource, maxDim: Int, recipe: RawRecipe?): Bitmap? {
+        val ext = extensionOf(source)
+        if (ext != null && ext != DngPreviewDecoder.EXT_DNG && UnsupportedRaw.handles(ext)) {
+            return null
+        }
+        return try {
+            developGenuine(source, maxDim, recipe)
+                ?: previewFallback.develop(source, maxDim, recipe)
+        } catch (_: OutOfMemoryError) {
+            try {
+                previewFallback.develop(source, maxDim, recipe)
+            } catch (_: Exception) {
+                null
+            }
+        } catch (_: Exception) {
+            try {
+                previewFallback.develop(source, maxDim, recipe)
+            } catch (_: Exception) {
+                null
+            }
+        }
+    }
+
+    private fun developGenuine(source: RenderSource, maxDim: Int, recipe: RawRecipe?): Bitmap? {
+        val bytes = readSourceBytes(source, forProbe = false) ?: return null
+        val parsed = when (val res = DngParser.parse(bytes)) {
+            is DngParseResult.Ok -> res.info
+            is DngParseResult.Err -> return null
+        }
+        val dev = DngCapabilities.developability(parsed)
+        if (!dev.developable) return null
+        val strips = DngParser.extractStripBytes(bytes, parsed) ?: return null
+        val result = DngDevelop.developToArgb(parsed, strips, recipe)
+        val ok = result as? DevelopResult.Ok ?: return null
+        var argb = ok.argb
+        var w = ok.width
+        var h = ok.height
+        if (maxDim > 0) {
+            val scaled = DngDevelop.downscaleArgb(argb, w, h, maxDim)
+            argb = scaled.first
+            w = scaled.second
+            h = scaled.third
+        }
+        if (w <= 0 || h <= 0 || argb.size != w * h) return null
+        if (w.toLong() * h > DngDevelop.MAX_PIXELS) return null
+        return try {
+            val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+            bmp.setPixels(argb, 0, w, 0, 0, w, h)
+            bmp
+        } catch (_: OutOfMemoryError) {
+            null
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun readSourceBytes(source: RenderSource, forProbe: Boolean): ByteArray? {
+        return try {
+            when (source) {
+                is RenderSource.File -> {
+                    val f = File(source.path)
+                    if (!f.isFile) return null
+                    val len = try {
+                        f.length()
+                    } catch (_: Exception) {
+                        -1L
+                    }
+                    if (len <= 0L || len > MAX_RAW_BYTES) return null
+                    if (len > Int.MAX_VALUE) return null
+                    f.readBytes()
+                }
+                is RenderSource.Content -> {
+                    appContext.contentResolver.openInputStream(source.uri.toUri())?.use { input ->
+                        val cap = if (forProbe) PROBE_CAP_BYTES else MAX_RAW_BYTES
+                        readCapped(input, cap)
+                    }
+                }
+            }
+        } catch (_: OutOfMemoryError) {
+            null
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun readCapped(input: java.io.InputStream, cap: Long): ByteArray? {
+        return try {
+            val out = java.io.ByteArrayOutputStream()
+            val buf = ByteArray(32768)
+            var total = 0L
+            while (true) {
+                val n = input.read(buf)
+                if (n <= 0) break
+                total += n
+                if (total > cap) return null
+                out.write(buf, 0, n)
+            }
+            out.toByteArray()
+        } catch (_: OutOfMemoryError) {
+            null
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun extensionOf(source: RenderSource): String? {
+        val raw = when (source) {
+            is RenderSource.File -> source.path.substringAfterLast('.', "").substringBefore('?')
+            is RenderSource.Content -> return null
+        }
+        if (raw.isBlank()) return null
+        return raw.lowercase(Locale.US)
+    }
+
+    companion object {
+        const val MAX_RAW_BYTES = 120_000_000L
+        const val PROBE_CAP_BYTES = 120_000_000L
     }
 }
 

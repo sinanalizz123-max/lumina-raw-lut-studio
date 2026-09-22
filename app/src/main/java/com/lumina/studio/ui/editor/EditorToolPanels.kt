@@ -81,7 +81,11 @@ fun EditorToolPanel(
     onControl: (AdjustControl, Float) -> Unit,
     onResetControl: (AdjustControl) -> Unit,
     modifier: Modifier = Modifier,
-    onAuto: () -> Unit = {}
+    onAuto: () -> Unit = {},
+    isDevelopedRaw: Boolean = false,
+    rawRecipe: com.lumina.studio.core.render.RawRecipe? = null,
+    onRawRecipe: (com.lumina.studio.core.render.RawRecipe) -> Unit = {},
+    onRawEyedropper: () -> Unit = {}
 ) {
     when (tool) {
         EditorTool.PRESETS -> PresetsToolPanel(
@@ -98,7 +102,11 @@ fun EditorToolPanel(
             onControl = onControl,
             onResetControl = onResetControl,
             onAuto = onAuto,
-            modifier = modifier
+            modifier = modifier,
+            isDevelopedRaw = isDevelopedRaw,
+            rawRecipe = rawRecipe,
+            onRawRecipe = onRawRecipe,
+            onRawEyedropper = onRawEyedropper
         )
         EditorTool.COLOR -> ColorPanel(
             params = params,
@@ -226,7 +234,11 @@ fun EditorToolPanel(
     onClearPreset: () -> Unit,
     onOpenLibrary: () -> Unit,
     modifier: Modifier = Modifier,
-    onAuto: () -> Unit = {}
+    onAuto: () -> Unit = {},
+    isDevelopedRaw: Boolean = false,
+    rawRecipe: com.lumina.studio.core.render.RawRecipe? = null,
+    onRawRecipe: (com.lumina.studio.core.render.RawRecipe) -> Unit = {},
+    onRawEyedropper: () -> Unit = {}
 ) {
     when (tool) {
         EditorTool.PRESETS -> PresetsToolPanel(
@@ -244,7 +256,11 @@ fun EditorToolPanel(
             onControl = onControl,
             onResetControl = onResetControl,
             modifier = modifier,
-            onAuto = onAuto
+            onAuto = onAuto,
+            isDevelopedRaw = isDevelopedRaw,
+            rawRecipe = rawRecipe,
+            onRawRecipe = onRawRecipe,
+            onRawEyedropper = onRawEyedropper
         )
     }
 }

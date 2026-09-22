@@ -34,7 +34,7 @@ object FormatCapabilities {
         editable("gif", "GIF", "First frame editable as a still"),
         previewOnly("tif", "TIFF", "Preview only — TIFF decode varies by device"),
         previewOnly("tiff", "TIFF", "Preview only — TIFF decode varies by device"),
-        previewOnly("dng", "DNG", "Embedded preview only — sensor data preserved untouched"),
+        previewOnly("dng", "DNG", "DNG preview by default — uncompressed sensor data develops to editable pixels; JPEG-compressed DNG stays embedded-preview only, sensor data preserved untouched"),
         previewOnly("cr2", "RAW", "Embedded preview only — proprietary RAW is not fully decoded"),
         previewOnly("cr3", "RAW", "Embedded preview only — proprietary RAW is not fully decoded"),
         previewOnly("nef", "RAW", "Embedded preview only — proprietary RAW is not fully decoded"),

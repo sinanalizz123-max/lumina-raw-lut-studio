@@ -176,8 +176,13 @@ fun ImportScreen(navController: NavController, importViewModel: ImportViewModel 
                     )
                 ) {
                     Text(
-                        text = if (uiState.rawDetected) "RAW image detected — opens as embedded preview"
-                        else uiState.previewNote ?: "Preview only — editing is limited for this format",
+                        text = if (uiState.rawDetected && !uiState.previewOnly) {
+                            uiState.previewNote
+                                ?: "DNG developed from sensor data — editable"
+                        } else if (uiState.rawDetected) {
+                            uiState.previewNote
+                                ?: "RAW image detected — opens as embedded preview"
+                        } else uiState.previewNote ?: "Preview only — editing is limited for this format",
                         modifier = Modifier.padding(16.dp),
                         style = LuminaSectionHeaderTextStyle,
                         color = LuminaOnSurface

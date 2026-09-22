@@ -205,6 +205,12 @@ class EditorViewModel(application: Application, private val projectId: String?) 
     private val _paramsRevision = MutableStateFlow(0L)
     val paramsRevision: StateFlow<Long> = _paramsRevision.asStateFlow()
 
+    private val _isDevelopedRaw = MutableStateFlow(false)
+    val isDevelopedRaw: StateFlow<Boolean> = _isDevelopedRaw.asStateFlow()
+
+    private val _rawRecipe = MutableStateFlow(com.lumina.studio.core.render.RawRecipe())
+    val rawRecipe: StateFlow<com.lumina.studio.core.render.RawRecipe> = _rawRecipe.asStateFlow()
+
     private val undoStack = ArrayDeque<EditParams>()
     private val redoStack = ArrayDeque<EditParams>()
     private var baseBitmap: Bitmap? = null
@@ -301,8 +307,13 @@ class EditorViewModel(application: Application, private val projectId: String?) 
                     val flags = withContext(Dispatchers.IO) { readPerformanceFlags() }
                     gpuEnabled = flags.first
                     previewMaxDim = flags.second
+                    _isDevelopedRaw.value = false
+                    _rawRecipe.value = com.lumina.studio.core.render.RawRecipe()
                     baseBitmap = withContext(Dispatchers.IO) { decodeBase(loaded.photoUri, previewMaxDim) }
                     ensureActive()
+                    _isDevelopedRaw.value = withContext(Dispatchers.IO) {
+                        probeDevelopedRaw(loaded.photoUri)
+                    }
                     preloadImportedLuts()
                 }
                 renderPreview()
@@ -401,8 +412,37 @@ class EditorViewModel(application: Application, private val projectId: String?) 
         }
     }
 
+    private fun probeDevelopedRaw(pathOrUri: String): Boolean {
+        return try {
+            if (!isDngPath(pathOrUri)) return false
+            RenderBackends.raw(getApplication()).isDevelopedRaw(RenderSource.of(pathOrUri))
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun isDngPath(pathOrUri: String): Boolean {
+        return try {
+            val lower = pathOrUri.substringAfterLast('.', "").substringBefore('?')
+                .lowercase(java.util.Locale.US)
+            lower == "dng"
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     private fun decodeFull(pathOrUri: String): Bitmap? {
         return try {
+            if (isDngPath(pathOrUri)) {
+                val developed = try {
+                    RenderBackends.raw(getApplication()).develop(
+                        RenderSource.of(pathOrUri), 0, _rawRecipe.value
+                    )
+                } catch (_: Exception) {
+                    null
+                }
+                if (developed != null) return developed
+            }
             val file = File(pathOrUri)
             if (file.exists()) {
                 val opts = BitmapFactory.Options().apply { inPreferredConfig = Bitmap.Config.ARGB_8888 }
@@ -424,6 +464,16 @@ class EditorViewModel(application: Application, private val projectId: String?) 
 
     private fun decodeBase(pathOrUri: String, maxDim: Int = previewMaxDim): Bitmap? {
         return try {
+            if (isDngPath(pathOrUri)) {
+                val developed = try {
+                    RenderBackends.raw(getApplication()).develop(
+                        RenderSource.of(pathOrUri), maxDim, _rawRecipe.value
+                    )
+                } catch (_: Exception) {
+                    null
+                }
+                if (developed != null) return developed
+            }
             val file = File(pathOrUri)
             if (file.exists()) {
                 val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
@@ -501,6 +551,59 @@ class EditorViewModel(application: Application, private val projectId: String?) 
         val hsl = PreviewRenderer.rgbToHsl(r, g, b)
         _selectedHsl.value = HslColor.nearestForHue(hsl[0])
         _eyedropperArmed.value = false
+        if (_isDevelopedRaw.value) {
+            try {
+                val gains = com.lumina.studio.core.raw.DngDevelop.wbGainsFromPickerPixel(argb)
+                val current = _rawRecipe.value
+                val next = current.copy(
+                    tempGain = gains[0].coerceIn(0.2f, 5f),
+                    tintGain = gains[1].coerceIn(0.2f, 5f)
+                )
+                if (next != current) updateRawRecipe(next)
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    fun updateRawRecipe(recipe: com.lumina.studio.core.render.RawRecipe) {
+        val clamped = recipe.copy(
+            exposureEv = recipe.exposureEv.coerceIn(-5f, 5f),
+            tempGain = recipe.tempGain.coerceIn(0.2f, 5f),
+            tintGain = recipe.tintGain.coerceIn(0.2f, 5f)
+        )
+        if (_rawRecipe.value == clamped) return
+        if (!_isDevelopedRaw.value) {
+            _rawRecipe.value = clamped
+            return
+        }
+        _rawRecipe.value = clamped
+        redevelopRaw()
+    }
+
+    fun resetRawRecipe() {
+        updateRawRecipe(com.lumina.studio.core.render.RawRecipe())
+    }
+
+    private var rawJob: Job? = null
+
+    private fun redevelopRaw() {
+        val path = _project.value?.photoUri ?: return
+        rawJob?.cancel()
+        rawJob = viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val developed = decodeBase(path, previewMaxDim) ?: return@launch
+                ensureActive()
+                val old = baseBitmap
+                baseBitmap = developed
+                try {
+                    if (old != null && old !== developed && !old.isRecycled) old.recycle()
+                } catch (_: Exception) {
+                }
+                renderPreview()
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+            }
+        }
     }
 
     fun updateHsl(color: HslColor, adjust: HslAdjust) {
