@@ -202,6 +202,39 @@ object ProjectStore {
         }
     }
 
+    /**
+     * Move a project directory into app-private trash instead of deleting it.
+     * The returned token is required to restore it. This makes the single-item
+     * UI "Undo" action real without exposing deleted originals to the gallery.
+     */
+    fun trashProjectFiles(context: Context, projectId: String): String? {
+        return try {
+            val id = ProjectStoreLayout.sanitizeProjectId(projectId)
+            val root = File(projectsRoot(context), id)
+            if (!root.exists()) return null
+            val trashRoot = File(context.filesDir, ProjectStoreLayout.TRASH_DIR).apply { mkdirs() }
+            val token = id + "-" + UUID.randomUUID().toString()
+            val target = File(trashRoot, token)
+            if (!root.renameTo(target)) return null
+            token
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    fun restoreTrashedProjectFiles(context: Context, projectId: String, token: String): Boolean {
+        return try {
+            val safeToken = token.replace(Regex("[^A-Za-z0-9_-]"), "_").take(120)
+            val source = File(File(context.filesDir, ProjectStoreLayout.TRASH_DIR), safeToken)
+            val target = File(projectsRoot(context), ProjectStoreLayout.sanitizeProjectId(projectId))
+            if (!source.isDirectory || target.exists()) return false
+            target.parentFile?.mkdirs()
+            source.renameTo(target)
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     fun deleteOwnedFile(context: Context, photoUri: String?): Boolean {
         if (photoUri.isNullOrBlank()) return false
         return try {
