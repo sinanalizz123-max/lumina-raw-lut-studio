@@ -354,5 +354,7 @@ private fun resetStep(vm: EditorViewModel, step: HistoryStep) {
         HistoryStep.DETAILS -> vm.resetDetailsAll()
         HistoryStep.MASKS -> vm.resetMasks()
         HistoryStep.CROP -> vm.resetCrop()
+        HistoryStep.RETOUCH -> vm.resetRetouch()
+        HistoryStep.LENS_BLUR -> vm.resetLensBlur()
     }
 }

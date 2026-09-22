@@ -181,6 +181,8 @@ fun EditorScreen(navController: NavController, projectId: String? = null) {
     val zoomWarning by vm.zoomWarning.collectAsState()
     val zoomEnhancing by vm.zoomEnhancing.collectAsState()
     val paramsRevision by vm.paramsRevision.collectAsState()
+    val isDevelopedRaw by vm.isDevelopedRaw.collectAsState()
+    val rawRecipe by vm.rawRecipe.collectAsState()
 
     var showRename by remember { mutableStateOf(false) }
     var renameText by remember(project?.name) { mutableStateOf(project?.name ?: "") }
@@ -618,9 +620,11 @@ fun EditorScreen(navController: NavController, projectId: String? = null) {
                                     }
                                     // M8: clone-source pick wins over placement (second tap
                                     // sets the source when armed — eyedropper-arm pattern).
-                                    if (cloneSourceArmedId != null) {
+                                    // Local copy: smart cast is illegal on delegated state.
+                                    val armedCloneId = cloneSourceArmedId
+                                    if (armedCloneId != null) {
                                         val frac = tapToPhotoFractions(tap, viewportSize, displayBitmap)
-                                        if (frac != null) vm.setCloneSource(cloneSourceArmedId, frac.first, frac.second)
+                                        if (frac != null) vm.setCloneSource(armedCloneId, frac.first, frac.second)
                                         return@detectTapGestures
                                     }
                                     // M8: tap-to-place retouch spots when armed.
@@ -1132,7 +1136,11 @@ fun EditorScreen(navController: NavController, projectId: String? = null) {
                             params = params,
                             onControl = { control, value -> vm.updateControl(control, value) },
                             onResetControl = { vm.resetControl(it) },
-                            onAuto = { vm.autoLight() }
+                            onAuto = { vm.autoLight() },
+                            isDevelopedRaw = isDevelopedRaw,
+                            rawRecipe = rawRecipe,
+                            onRawRecipe = { vm.updateRawRecipe(it) },
+                            onRawEyedropper = { vm.setEyedropperArmed(true) }
                         )
                         Row(
                             modifier = Modifier
