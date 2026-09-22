@@ -27,13 +27,13 @@ jobs:
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;36.0.0"
 
       - name: Assemble debug
-        run: chmod +x gradlew && ./gradlew :app:assembleDebug --console=plain --max-workers=1
+        run: chmod +x gradlew && ./gradlew :app:assembleDebug --console=plain
 
       - name: Unit tests
-        run: ./gradlew :app:testDebugUnitTest --console=plain --max-workers=1
+        run: ./gradlew :app:testDebugUnitTest --console=plain
 
       - name: Lint
-        run: ./gradlew :app:lintDebug --console=plain --max-workers=1
+        run: ./gradlew :app:lintDebug --console=plain
 
       - name: Upload debug APK
         if: success()
