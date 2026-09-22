@@ -124,8 +124,9 @@ object MemoryBudget {
         if (width <= 0 || height <= 0 || maxStripBytes <= 0L || bytesPerPixel <= 0L) return height.coerceAtLeast(1)
         val rowBytes = width.toLong() * bytesPerPixel
         if (rowBytes <= 0L) return height
-        val rows = (maxStripBytes / rowBytes).toInt().coerceAtLeast(1)
-        return rows.coerceAtMost(height)
+        // Clamp in Long BEFORE toInt: huge caps (e.g. Long.MAX_VALUE) would
+        // otherwise overflow Int and collapse to 1 (M16 CI fix).
+        return (maxStripBytes / rowBytes).coerceIn(1L, height.toLong()).toInt()
     }
 
     /**
