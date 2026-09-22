@@ -149,6 +149,7 @@ class ProjectsViewModel(application: Application) : AndroidViewModel(application
     private var mergeJob: Job? = null
 
     private var lastDeleted: Project? = null
+    private var lastDeletedTrashToken: String? = null
 
     val uiState: StateFlow<ProjectsUiState> = combine(
         database.projectDao().observeProjects(),
@@ -588,9 +589,16 @@ class ProjectsViewModel(application: Application) : AndroidViewModel(application
      */
     fun delete(project: Project) {
         lastDeleted = project
+        lastDeletedTrashToken = null
         viewModelScope.launch(Dispatchers.IO) {
-            deleteProjectRow(project.id)
-            runCatching { ProjectStore.deleteOwnedFile(getApplication(), project.photoUri) }
+            deleteProjectRow(project.id, deleteFiles = false)
+            lastDeletedTrashToken = ProjectStore.trashProjectFiles(
+                getApplication(),
+                project.id
+            )
+            if (lastDeletedTrashToken == null) {
+                _notice.value = "Deleted photo; undo unavailable"
+            }
         }
     }
 
@@ -617,20 +625,27 @@ class ProjectsViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
-    private suspend fun deleteProjectRow(projectId: String) {
+    private suspend fun deleteProjectRow(projectId: String, deleteFiles: Boolean = true) {
         val app = getApplication<Application>()
         database.projectDao().deleteById(projectId)
         runCatching { database.editHistoryDao().clearForProject(projectId) }
-        runCatching { ProjectStore.deleteProjectFiles(app, projectId) }
+        if (deleteFiles) runCatching { ProjectStore.deleteProjectFiles(app, projectId) }
         runCatching { albumRepository.removeProjectFromAll(projectId) }
         CullEngine.invalidate(projectId)
     }
 
     fun undoDelete(): Project? {
         val deleted = lastDeleted ?: return null
+        val token = lastDeletedTrashToken ?: return null
         lastDeleted = null
-        if (!ProjectStore.originalExists(deleted.photoUri)) return null
-        viewModelScope.launch {
+        lastDeletedTrashToken = null
+        viewModelScope.launch(Dispatchers.IO) {
+            val app = getApplication<Application>()
+            val restored = ProjectStore.restoreTrashedProjectFiles(app, deleted.id, token)
+            if (!restored) {
+                _notice.value = "Could not restore deleted photo"
+                return@launch
+            }
             database.projectDao().upsert(deleted.copy(updatedAt = System.currentTimeMillis()))
         }
         return deleted
