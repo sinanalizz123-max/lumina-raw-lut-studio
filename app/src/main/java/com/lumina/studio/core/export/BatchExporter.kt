@@ -115,7 +115,17 @@ object BatchExporter {
             val baseH = project.height.takeIf { it > 0 } ?: full.height
             val (targetW, targetH) = Exporter.targetDimensions(baseW, baseH, settings)
             val lut = com.lumina.studio.core.lut.LutRegistry.resolve(params.presetId)
-            rendered = Exporter.renderForExport(full, params, lut, targetW, targetH)
+            // M15 (§11): batch exports are export-final too — same GPU-first
+            // opt-in as ExportScreen (toggle ON + GLES3), CPU otherwise.
+            val gpuBackend = runCatching {
+                val enabled = SettingsRepository(app).gpuAcceleration.first()
+                if (enabled && com.lumina.studio.core.render.gpu.GpuSupport.isGles3(app)) {
+                    RenderBackends.gpu()
+                } else {
+                    null
+                }
+            }.getOrNull()
+            rendered = Exporter.renderForExport(full, params, lut, targetW, targetH, gpuBackend)
             ensureActive()
             // M11: explicit upscale (renderer never upscales), per-format
             // colorspace (TIFF coerces to sRGB), output sharpen post-resize.

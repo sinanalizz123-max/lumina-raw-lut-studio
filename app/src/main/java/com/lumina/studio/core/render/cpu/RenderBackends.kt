@@ -14,6 +14,9 @@ object RenderBackends {
     private var cpuInstance: CpuRenderBackend? = null
 
     @Volatile
+    private var gpuInstance: com.lumina.studio.core.render.gpu.GlesBackend? = null
+
+    @Volatile
     private var decoderInstance: BitmapFactoryDecoder? = null
 
     @Volatile
@@ -53,6 +56,47 @@ object RenderBackends {
             }
         }
         return current!!
+    }
+
+    /**
+     * M15 real-GPU backend singleton (§11). Lazy; EGL/GL resources inside are
+     * created on first GPU render, reused across renders, and torn down by
+     * [releaseGpu] (ViewModel.onCleared + low-memory hook). The backend falls
+     * back to [cpu] internally on any GLES failure, so callers never branch.
+     */
+    fun gpu(): RenderBackend<Bitmap> {
+        var current = gpuInstance
+        if (current == null) {
+            synchronized(this) {
+                current = gpuInstance
+                if (current == null) {
+                    current = com.lumina.studio.core.render.gpu.GlesBackend()
+                    gpuInstance = current
+                }
+            }
+        }
+        return current!!
+    }
+
+    fun releaseGpu() {
+        runCatching { gpuInstance?.release() }
+    }
+
+    fun attachGpuMemoryHook(context: Context) {
+        runCatching {
+            val app = context.applicationContext
+            var current = gpuInstance
+            if (current == null) {
+                synchronized(this) {
+                    current = gpuInstance
+                    if (current == null) {
+                        current = com.lumina.studio.core.render.gpu.GlesBackend()
+                        gpuInstance = current
+                    }
+                }
+            }
+            current?.attachLowMemoryHook(app)
+        }
     }
 
     fun export(): ExportRenderer<Bitmap> = CpuExportRenderer

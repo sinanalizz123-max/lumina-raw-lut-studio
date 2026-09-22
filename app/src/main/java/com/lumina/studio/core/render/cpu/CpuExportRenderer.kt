@@ -35,7 +35,13 @@ object CpuExportRenderer : ExportRenderer<Bitmap> {
             is RenderResult.Unavailable -> src
             RenderResult.OomBudget -> src
         }
-        val rendered = graded
+        return fitToTarget(graded, src, targetW, targetH)
+    }
+
+    // M15: shared fit-scale used by both the CPU export render above and the
+    // optional GPU-first path in Exporter.renderForExport (same code, same
+    // behavior for either backend's graded bitmap).
+    fun fitToTarget(rendered: Bitmap, src: Bitmap, targetW: Int, targetH: Int): Bitmap {
         if (targetW <= 0 || targetH <= 0) return rendered
         if (rendered.width == targetW && rendered.height == targetH) return rendered
         val rw = rendered.width

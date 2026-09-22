@@ -271,31 +271,58 @@ class EditorViewModel(application: Application, private val projectId: String?) 
     private fun appDecoder(): ImageDecoder<Bitmap> =
         RenderBackends.decoder(getApplication())
 
+    // M15 (§11): preview/tile/thumb stay CPU (responsiveness proven); Export
+    // FINAL + Fullscreen attempt the GLES3 hybrid backend when the
+    // performance toggle is ON and the device reports GLES3, with automatic
+    // CPU fallback inside GlesBackend. The returned label names the backend
+    // actually used ("GPU (GLES3)" vs "CPU (fallback: reason)") for
+    // DebugDiagnostics. CPU behavior is otherwise byte-identical.
     private fun gradeThroughBackend(
         base: Bitmap,
         params: EditParams,
         lut: LutCube?,
         target: RenderTarget,
         generation: Long
-    ): Bitmap? {
-        return when (
-            val result = RenderBackends.cpu().render(
-                RenderRequest(
-                    params = params,
-                    lut = lut,
-                    source = base,
-                    target = target,
-                    generation = generation
-                )
+    ): Pair<Bitmap?, String> {
+        val request = RenderRequest(
+            params = params,
+            lut = lut,
+            source = base,
+            target = target,
+            generation = generation
+        )
+        if (
+            com.lumina.studio.core.render.gpu.GpuRenderPolicy.shouldAttemptGpu(
+                target, gpuEnabled,
+                com.lumina.studio.core.render.gpu.GpuSupport.glesVersion(getApplication())
             )
         ) {
-            is RenderResult.Ok -> result.bitmap
-            is RenderResult.Unavailable -> null
-            RenderResult.OomBudget -> null
+            val backend = RenderBackends.gpu()
+            if (backend is com.lumina.studio.core.render.gpu.GlesBackend) {
+                val outcome = runCatching { backend.renderWithLabel(request) }.getOrNull()
+                if (outcome != null) {
+                    return when (val result = outcome.result) {
+                        is RenderResult.Ok -> result.bitmap to outcome.backendLabel
+                        is RenderResult.Unavailable -> null to outcome.backendLabel
+                        RenderResult.OomBudget -> null to outcome.backendLabel
+                    }
+                }
+            }
+        }
+        return when (
+            val result = RenderBackends.cpu().render(request)
+        ) {
+            is RenderResult.Ok -> result.bitmap to
+                com.lumina.studio.core.render.gpu.GpuRenderPolicy.CPU_LABEL
+            is RenderResult.Unavailable -> null to
+                com.lumina.studio.core.render.gpu.GpuRenderPolicy.CPU_LABEL
+            RenderResult.OomBudget -> null to
+                com.lumina.studio.core.render.gpu.GpuRenderPolicy.CPU_LABEL
         }
     }
 
     init {
+        runCatching { RenderBackends.attachGpuMemoryHook(getApplication()) }
         if (!projectId.isNullOrBlank()) load(projectId) else _loading.value = false
     }
 
@@ -1951,7 +1978,7 @@ class EditorViewModel(application: Application, private val projectId: String?) 
             val params = _params.value
             val lut = LutRegistry.resolve(params.presetId)
             val renderStart = SystemClock.elapsedRealtime()
-            val out = gradeThroughBackend(
+            val (out, backendLabel) = gradeThroughBackend(
                 base, params, lut, RenderTarget.Preview(previewMaxDim), generation
             )
             val renderMs = SystemClock.elapsedRealtime() - renderStart
@@ -1969,7 +1996,7 @@ class EditorViewModel(application: Application, private val projectId: String?) 
                 val frame = out ?: base
                 val dims = if (frame != null) "${frame.width}×${frame.height}" else "—"
                 com.lumina.studio.core.util.DebugDiagnostics.reportRender(
-                    "CpuRenderBackend", appDecoder().name, renderMs, dims, _paramsRevision.value
+                    backendLabel, appDecoder().name, renderMs, dims, _paramsRevision.value
                 )
             }
             // Phase 4B: histogram auto-recompute on every render runs only with GPU
@@ -2046,7 +2073,7 @@ class EditorViewModel(application: Application, private val projectId: String?) 
                 val decoded = withContext(Dispatchers.IO) { decodeFullscreenBitmap(path) }
                     ?: return@launch
                 ensureActive()
-                val rendered = gradeThroughBackend(
+                val (rendered, _) = gradeThroughBackend(
                     decoded, params, lut,
                     RenderTarget.Fullscreen(FULLSCREEN_MAX_DIM), generation
                 )
@@ -2306,7 +2333,7 @@ class EditorViewModel(application: Application, private val projectId: String?) 
         // The params revision captured above is this tile's generation token:
         // a params change bumps _paramsRevision, so a tile that finishes late
         // is dropped below and never overwrites the current viewport (§53).
-        val rendered: Bitmap? = gradeThroughBackend(
+        val (rendered, _) = gradeThroughBackend(
             raw, paramsSnap, lut,
             RenderTarget.Tile(ZOOM_TILE_MAX_PIXELS.toLong()), revision
         )
@@ -2478,6 +2505,11 @@ class EditorViewModel(application: Application, private val projectId: String?) 
         } catch (_: Exception) {
         }
         _fullscreenPreview.value = null
+        // M15: drop GL context/textures/FBO on owner teardown (lazy re-init
+        // on next GPU render; in-flight renders already hold their bitmaps).
+        // A shared ComponentCallbacks2 trim hook is attached in init for
+        // low-memory teardown between ViewModel lifetimes.
+        runCatching { RenderBackends.releaseGpu() }
     }
 
     private fun computeHistogram(source: Bitmap? = null) {

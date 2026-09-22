@@ -266,13 +266,40 @@ object Exporter {
         return (jpeg * 0.6 + 0.5).toLong().coerceAtLeast(1L)
     }
 
+    // M15 (§11): optional GPU-first export FINAL. Null (default) keeps the
+    // byte-identical CPU path; a non-null backend (ExportScreen passes
+    // RenderBackends.gpu() when the performance toggle is ON and the device
+    // reports GLES3) is tried with an Export target + full LUT table, and any
+    // miss falls through to the CPU renderer below. Fit-scale is shared
+    // (CpuExportRenderer.fitToTarget) so both backends size identically.
     fun renderForExport(
         src: Bitmap,
         params: EditParams,
         lut: LutCube?,
         targetW: Int,
-        targetH: Int
-    ): Bitmap = RenderBackends.export().renderForExport(src, params, lut, targetW, targetH)
+        targetH: Int,
+        gpuBackend: com.lumina.studio.core.render.RenderBackend<Bitmap>? = null
+    ): Bitmap {
+        if (gpuBackend != null) {
+            val graded = runCatching {
+                gpuBackend.render(
+                    com.lumina.studio.core.render.RenderRequest(
+                        params = params,
+                        lut = lut,
+                        source = src,
+                        target = com.lumina.studio.core.render.RenderTarget.Export(targetW, targetH),
+                        generation = 0L,
+                        fullLut = true
+                    )
+                )
+            }.getOrNull()
+            if (graded is com.lumina.studio.core.render.RenderResult.Ok) {
+                return com.lumina.studio.core.render.cpu.CpuExportRenderer
+                    .fitToTarget(graded.bitmap, src, targetW, targetH)
+            }
+        }
+        return RenderBackends.export().renderForExport(src, params, lut, targetW, targetH)
+    }
 
     fun compress(bitmap: Bitmap, settings: ExportSettings, tmpDir: java.io.File? = null): ByteArray {
         if (settings.format == ExportFormat.TIFF) return encodeTiff(bitmap)

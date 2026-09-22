@@ -156,6 +156,9 @@ fun ExportScreen(navController: NavController, projectId: String? = null) {
     // M11 (§39): RAW/sidecar jobs are cancellable (previously fire-and-forget).
     var rawJob by remember { mutableStateOf<Job?>(null) }
     var sidecarJob by remember { mutableStateOf<Job?>(null) }
+    // M15 (§11): GPU-first export FINAL when the performance toggle is ON
+    // and the device reports GLES3; otherwise null keeps the CPU path.
+    var gpuExportOn by remember { mutableStateOf(false) }
     // M11 (§38 formats): encoder-gated availability drives the format rows —
     // HEIC/WebP rows appear only when the device can encode them (no dead UI).
     val webpAvailable = remember { Exporter.hasWebpEncoder() }
@@ -211,6 +214,15 @@ fun ExportScreen(navController: NavController, projectId: String? = null) {
 
     val wideGamut = remember { Exporter.isWideGamutDisplay(context) }
     val settingsRepository = remember { SettingsRepository(context) }
+
+    LaunchedEffect(settingsRepository) {
+        gpuExportOn = try {
+            settingsRepository.gpuAcceleration.first() &&
+                com.lumina.studio.core.render.gpu.GpuSupport.isGles3(context)
+        } catch (_: Exception) {
+            false
+        }
+    }
 
     LaunchedEffect(Unit) {
         try {
@@ -307,6 +319,11 @@ fun ExportScreen(navController: NavController, projectId: String? = null) {
         savedUri = null
         exporting = true
         progress = 0f
+        val gpuBackend = if (gpuExportOn) {
+            runCatching { com.lumina.studio.core.render.cpu.RenderBackends.gpu() }.getOrNull()
+        } else {
+            null
+        }
         exportJob = scope.launch {
             var full: Bitmap? = null
             var rendered: Bitmap? = null
@@ -323,7 +340,7 @@ fun ExportScreen(navController: NavController, projectId: String? = null) {
                 val currentSettings = settings
                 rendered = withContext(Dispatchers.Default) {
                     ensureActive()
-                    Exporter.renderForExport(fullFrame, vm.params.value, lut, targetW, targetH)
+                    Exporter.renderForExport(fullFrame, vm.params.value, lut, targetW, targetH, gpuBackend)
                 }
                 progress = 0.6f
                 // M11 (§38+§36): explicit upscale (renderer never upscales),

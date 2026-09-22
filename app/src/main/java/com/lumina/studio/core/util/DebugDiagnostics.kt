@@ -23,7 +23,11 @@ object DebugDiagnostics {
     private val _zoomTileInfo = MutableStateFlow("idle")
     val zoomTileInfo: StateFlow<String> = _zoomTileInfo.asStateFlow()
 
-    const val GPU_INFO = "CPU (no GLES backend yet)"
+    // M15: GLES3 hybrid backend exists (Export FINAL + fullscreen when the
+    // performance toggle is ON and the device reports GLES3, CPU fallback
+    // otherwise). Per-render truth still comes from reportRender's backend
+    // argument ("GPU (GLES3)" vs "CPU (fallback: reason)").
+    const val GPU_INFO = "GLES3 hybrid (export + fullscreen; CPU fallback)"
     const val COLOR_SPACE = "sRGB (working)"
 
     fun memorySummary(): String {
