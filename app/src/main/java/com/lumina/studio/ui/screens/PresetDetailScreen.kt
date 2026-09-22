@@ -20,12 +20,15 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -37,16 +40,21 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavController
+import android.content.Intent
 import com.lumina.studio.core.data.local.Preset
 import com.lumina.studio.core.design.components.AppBottomSheet
+import com.lumina.studio.core.design.components.AppDialog
 import com.lumina.studio.core.design.components.EmptyState
 import com.lumina.studio.core.design.components.EmptyStateIllustration
 import com.lumina.studio.core.design.components.ProSlider
@@ -58,8 +66,15 @@ import com.lumina.studio.core.design.theme.LuminaOnSurface
 import com.lumina.studio.core.design.theme.LuminaScrim
 import com.lumina.studio.core.design.theme.LuminaSectionHeaderTextStyle
 import com.lumina.studio.core.edit.toEditParams
+import com.lumina.studio.core.export.Exporter
 import com.lumina.studio.core.lut.BuiltInPresets
+import com.lumina.studio.core.lut.LutRenderer
+import com.lumina.studio.core.presets.SettingGroup
+import com.lumina.studio.core.presets.SettingGroups
 import com.lumina.studio.ui.presets.PresetThumb
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -96,6 +111,15 @@ fun PresetDetailScreen(
                 )
             }
     }
+
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var selectedGroups by remember(preset?.id) {
+        mutableStateOf(SettingGroups.PRESET_GROUPS)
+    }
+    var renameOpen by remember { mutableStateOf(false) }
+    var renameText by remember(preset?.name) { mutableStateOf(preset?.name ?: "") }
+    var deleteConfirm by remember { mutableStateOf(false) }
 
     val activeParams = project?.toEditParams()
     val isActive = activeParams?.presetId == preset?.id
@@ -202,6 +226,11 @@ fun PresetDetailScreen(
                 style = LuminaCaptionTextStyle,
                 color = LuminaMuted
             )
+            Text(
+                text = LutRenderer.LARGE_LUT_PREVIEW_NOTE + " Exports always render the full table.",
+                style = LuminaCaptionTextStyle,
+                color = LuminaMuted
+            )
             if (project == null) {
                 Text(
                     text = "Import a photo to apply this preset.",
@@ -300,6 +329,159 @@ fun PresetDetailScreen(
                 ) {
                     Text("Reset")
                 }
+            }
+            Text(
+                text = "Apply only selected groups",
+                style = LuminaSectionHeaderTextStyle,
+                color = LuminaOnSurface
+            )
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                SettingGroups.PRESET_GROUPS.sortedBy { it.ordinal }.forEach { group ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Checkbox(
+                            checked = group in selectedGroups,
+                            onCheckedChange = { checked ->
+                                selectedGroups = if (checked) {
+                                    selectedGroups + group
+                                } else {
+                                    selectedGroups - group
+                                }
+                            }
+                        )
+                        Text(
+                            text = group.label,
+                            style = LuminaCaptionTextStyle,
+                            color = LuminaOnSurface
+                        )
+                    }
+                }
+            }
+            OutlinedButton(
+                onClick = {
+                    val target = project
+                    if (target == null) {
+                        presetsViewModel.notify("Import a photo first, then apply presets")
+                    } else {
+                        presetsViewModel.applyWithGroups(target.id, preset, selectedGroups)
+                    }
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 48.dp)
+            ) {
+                Text("Apply selected groups")
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                OutlinedButton(
+                    onClick = {
+                        renameText = preset.name
+                        renameOpen = true
+                    },
+                    modifier = Modifier
+                        .weight(1f)
+                        .heightIn(min = 48.dp)
+                ) { Text("Rename") }
+                OutlinedButton(
+                    onClick = { presetsViewModel.duplicatePreset(preset) },
+                    modifier = Modifier
+                        .weight(1f)
+                        .heightIn(min = 48.dp)
+                ) { Text("Duplicate") }
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                OutlinedButton(
+                    onClick = {
+                        presetsViewModel.buildShareFor(preset) { shared ->
+                            if (shared == null) {
+                                presetsViewModel.notify("Could not share that preset")
+                                return@buildShareFor
+                            }
+                            scope.launch {
+                                try {
+                                    val uri = withContext(Dispatchers.IO) {
+                                        Exporter.saveJsonToDownloads(
+                                            context, shared.fileName, shared.json
+                                        )
+                                    }
+                                    shared.warning?.let { snackbar.showSnackbar(it) }
+                                    val send = Intent(Intent.ACTION_SEND).apply {
+                                        type = "application/json"
+                                        putExtra(Intent.EXTRA_STREAM, uri)
+                                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                    }
+                                    context.startActivity(Intent.createChooser(send, "Share preset"))
+                                } catch (_: Exception) {
+                                    snackbar.showSnackbar("Sharing is not available")
+                                }
+                            }
+                        }
+                    },
+                    modifier = Modifier
+                        .weight(1f)
+                        .heightIn(min = 48.dp)
+                ) { Text("Share") }
+                OutlinedButton(
+                    onClick = { deleteConfirm = true },
+                    modifier = Modifier
+                        .weight(1f)
+                        .heightIn(min = 48.dp)
+                ) { Text("Delete") }
+            }
+            if (renameOpen) {
+                AlertDialog(
+                    onDismissRequest = { renameOpen = false },
+                    title = { Text("Rename preset") },
+                    text = {
+                        OutlinedTextField(
+                            value = renameText,
+                            onValueChange = { renameText = it },
+                            label = { Text("Preset name") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    },
+                    confirmButton = {
+                        TextButton(
+                            onClick = {
+                                if (renameText.isNotBlank()) {
+                                    presetsViewModel.renamePreset(preset, renameText)
+                                    renameOpen = false
+                                }
+                            },
+                            modifier = Modifier.heightIn(min = 48.dp)
+                        ) { Text("Rename") }
+                    },
+                    dismissButton = {
+                        TextButton(
+                            onClick = { renameOpen = false },
+                            modifier = Modifier.heightIn(min = 48.dp)
+                        ) { Text("Cancel") }
+                    }
+                )
+            }
+            if (deleteConfirm) {
+                AppDialog(
+                    title = "Delete preset?",
+                    message = "“${preset.name}” will be removed, including its saved LUT file.",
+                    confirmLabel = "Delete",
+                    onDismiss = { deleteConfirm = false },
+                    onConfirm = {
+                        deleteConfirm = false
+                        presetsViewModel.deletePreset(preset)
+                        navController.popBackStack()
+                    }
+                )
             }
         }
     }

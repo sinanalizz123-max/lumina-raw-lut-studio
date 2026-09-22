@@ -6,6 +6,7 @@ import kotlin.math.floor
 object LutRenderer {
     const val FAST_PATH_MAX_SIZE = 33
     const val DOWNSAMPLED_SIZE = 32
+    const val LARGE_LUT_PREVIEW_NOTE = "Large LUTs preview at reduced resolution."
 
     // Zoom-tile perf: cache the downsampled effective table per LutCube
     // instance. Large imported LUTs (>33) cost ~32k trilinear samples to
@@ -26,11 +27,27 @@ object LutRenderer {
         lut: LutCube,
         intensity: Float,
         outConfig: Bitmap.Config = Bitmap.Config.ARGB_8888
+    ): Bitmap = applyWithTable(src, effectiveTable(lut), intensity, outConfig)
+
+    // Export parity: previews intentionally use the downsampled effective
+    // table for large LUTs (see LARGE_LUT_PREVIEW_NOTE), but exports must
+    // render the FULL table so the saved pixels match the LUT authoring.
+    fun applyLutFull(
+        src: Bitmap,
+        lut: LutCube,
+        intensity: Float,
+        outConfig: Bitmap.Config = Bitmap.Config.ARGB_8888
+    ): Bitmap = applyWithTable(src, lut, intensity, outConfig)
+
+    private fun applyWithTable(
+        src: Bitmap,
+        table: LutCube,
+        intensity: Float,
+        outConfig: Bitmap.Config
     ): Bitmap {
         val t = intensity.coerceIn(0f, 1f)
         if (t <= 0f) return src
         if (src.width <= 0 || src.height <= 0) return src
-        val table = effectiveTable(lut)
         val w = src.width
         val h = src.height
         val pixels = IntArray(w * h)

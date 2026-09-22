@@ -24,7 +24,10 @@ object CpuExportRenderer : ExportRenderer<Bitmap> {
                     lut = lut,
                     source = src,
                     target = RenderTarget.Export(targetW, targetH),
-                    generation = CpuRenderBackend.NO_GENERATION
+                    generation = CpuRenderBackend.NO_GENERATION,
+                    // M10 parity: exports render the FULL LUT table while
+                    // previews keep the downsampled effective table.
+                    fullLut = true
                 )
             )
         ) {

@@ -4,6 +4,8 @@ import android.app.Application
 import android.content.Intent
 import android.graphics.Bitmap
 import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -77,6 +79,9 @@ import com.lumina.studio.core.export.ExportSettings
 import com.lumina.studio.core.export.Exporter
 import com.lumina.studio.core.export.QualityPreset
 import com.lumina.studio.core.export.ResolutionMode
+import com.lumina.studio.core.export.Sidecar
+import com.lumina.studio.core.lut.LutLimits
+import com.lumina.studio.core.lut.LutRegistry
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.first
@@ -144,6 +149,44 @@ fun ExportScreen(navController: NavController, projectId: String? = null) {
     var rawUri by remember { mutableStateOf<Uri?>(null) }
     var sidecarUri by remember { mutableStateOf<Uri?>(null) }
     var rawError by remember { mutableStateOf<String?>(null) }
+    var sidecarNotice by remember { mutableStateOf<String?>(null) }
+
+    val sidecarPicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        sidecarNotice = null
+        scope.launch {
+            val text = withContext(Dispatchers.IO) {
+                try {
+                    context.contentResolver.openInputStream(uri)?.use { input ->
+                        LutLimits.readBounded(input)?.toString(Charsets.UTF_8)
+                    }
+                } catch (_: Exception) {
+                    null
+                }
+            }
+            if (text.isNullOrBlank()) {
+                sidecarNotice = "Could not read that sidecar file."
+                return@launch
+            }
+            val parsed = Sidecar.parse(text)
+            if (parsed == null) {
+                sidecarNotice = "That file is not a Lumina sidecar (.lumina.json)."
+                return@launch
+            }
+            var final = parsed.params
+            val warnings = parsed.warnings.toMutableList()
+            val lutId = parsed.params.presetId
+            if (lutId != null && LutRegistry.resolve(lutId) == null) {
+                final = Sidecar.withoutLut(parsed.params)
+                warnings.add(Sidecar.missingLutWarning(lutId))
+            }
+            vm.applyExternalParams(final)
+            warnings.add("Recipe applied — undo from the editor if needed.")
+            sidecarNotice = warnings.joinToString("\n")
+        }
+    }
 
     val wideGamut = remember { Exporter.isWideGamutDisplay(context) }
     val settingsRepository = remember { SettingsRepository(context) }
@@ -415,6 +458,13 @@ fun ExportScreen(navController: NavController, projectId: String? = null) {
                                 .fillMaxWidth()
                                 .heightIn(min = 48.dp)
                         ) { Text(if (rawBusy) "Working…" else "Save recipe (.json)") }
+                        OutlinedButton(
+                            onClick = { sidecarPicker.launch(arrayOf("application/json", "*/*")) },
+                            enabled = !rawBusy,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 48.dp)
+                        ) { Text("Import recipe (.json)") }
                         if (rawUri != null) {
                             Text(
                                 rawUri.toString(),
@@ -425,6 +475,13 @@ fun ExportScreen(navController: NavController, projectId: String? = null) {
                         if (sidecarUri != null) {
                             Text(
                                 sidecarUri.toString(),
+                                style = LuminaCaptionTextStyle,
+                                color = LuminaMuted
+                            )
+                        }
+                        if (sidecarNotice != null) {
+                            Text(
+                                sidecarNotice!!,
                                 style = LuminaCaptionTextStyle,
                                 color = LuminaMuted
                             )

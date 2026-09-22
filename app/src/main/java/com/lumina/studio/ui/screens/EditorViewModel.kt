@@ -342,11 +342,26 @@ class EditorViewModel(application: Application, private val projectId: String?) 
 
     private suspend fun preloadImportedLuts() {
         try {
-            database.presetDao().observePresets().first().forEach { preset ->
-                LutRegistry.registerParsed(preset.id, preset.cubeText)
+            val presets = database.presetDao().observePresets().first()
+            withContext(Dispatchers.IO) {
+                com.lumina.studio.core.lut.LutRehydrator.rehydrate(
+                    presets,
+                    com.lumina.studio.core.data.store.ProjectStore.lutsDir(getApplication())
+                )
             }
         } catch (_: Exception) {
         }
+    }
+
+    fun applyExternalParams(params: EditParams, historyTag: String? = EditHistoryLog.EDIT) {
+        val current = _params.value
+        if (current == params) return
+        pushUndo(current)
+        redoStack.clear()
+        _params.value = params
+        syncUndoRedo()
+        renderPreview()
+        schedulePersist(historyTag)
     }
 
     fun currentLut(): LutCube? = LutRegistry.resolve(_params.value.presetId)

@@ -36,9 +36,9 @@ sealed interface CubeParseResult {
 private class CubeSyntaxException(message: String) : Exception(message)
 
 object CubeParser {
-    const val MIN_SIZE = 2
-    const val MAX_SIZE = 64
-    const val MAX_TEXT_CHARS = 16 * 1024 * 1024
+    const val MIN_SIZE = LutLimits.MIN_SIZE
+    const val MAX_SIZE = LutLimits.MAX_SIZE
+    const val MAX_TEXT_CHARS = LutLimits.MAX_TEXT_CHARS
 
     fun parse(text: String, fallbackTitle: String? = null): CubeParseResult {
         return try {
@@ -52,7 +52,7 @@ object CubeParser {
 
     private fun parseThrowing(text: String, fallbackTitle: String?): CubeParseResult {
         if (text.length > MAX_TEXT_CHARS) {
-            throw CubeSyntaxException("File is too large to be a .CUBE LUT (over 16 MB)")
+            throw CubeSyntaxException("File is too large to be a .CUBE LUT (over 8 MB)")
         }
         if (text.isBlank()) throw CubeSyntaxException("Empty file — no LUT data found")
 
@@ -158,6 +158,9 @@ object CubeParser {
         val size = (s3 ?: s1)!!
         val is3D = s3 != null
         val expected = if (is3D) size * size * size else size
+        if (expected > LutLimits.MAX_DATA_POINTS) {
+            throw CubeSyntaxException("LUT declares more data points than supported")
+        }
         if (rows.size != expected) {
             throw CubeSyntaxException(
                 "Expected $expected DATA lines for size $size but found ${rows.size}"

@@ -3,11 +3,23 @@ package com.lumina.studio.ui.screens
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.lumina.studio.core.batch.BatchItemResult
+import com.lumina.studio.core.batch.BatchOps
+import com.lumina.studio.core.batch.SettingsClipboard
 import com.lumina.studio.core.data.local.DatabaseProvider
 import com.lumina.studio.core.data.local.Project
 import com.lumina.studio.core.data.store.ProjectStore
+import com.lumina.studio.core.edit.EditParams
+import com.lumina.studio.core.edit.toEditParams
+import com.lumina.studio.core.edit.withEditParams
+import com.lumina.studio.core.export.BatchExporter
+import com.lumina.studio.core.export.ExportSettings
+import com.lumina.studio.core.lut.LutRegistry
+import com.lumina.studio.core.presets.PresetShare
+import com.lumina.studio.core.presets.SettingGroups
 import com.lumina.studio.core.util.ImageFiles
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -15,10 +27,20 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.Locale
 import java.util.UUID
 
 enum class ProjectSort { DATE, NAME, TYPE }
+
+data class BatchUiState(
+    val running: Boolean = false,
+    val done: Int = 0,
+    val total: Int = 0,
+    val progress: Float = 0f,
+    val results: List<BatchItemResult> = emptyList(),
+    val summary: String? = null
+)
 
 data class ProjectsUiState(
     val projects: List<Project> = emptyList(),
@@ -45,6 +67,14 @@ class ProjectsViewModel(application: Application) : AndroidViewModel(application
 
     private val _notice = MutableStateFlow<String?>(null)
     val notice: StateFlow<String?> = _notice.asStateFlow()
+
+    private val _selectedIds = MutableStateFlow<Set<String>>(emptySet())
+    val selectedIds: StateFlow<Set<String>> = _selectedIds.asStateFlow()
+
+    private val _batchState = MutableStateFlow(BatchUiState())
+    val batchState: StateFlow<BatchUiState> = _batchState.asStateFlow()
+
+    private var batchJob: Job? = null
 
     private var lastDeleted: Project? = null
 
@@ -93,6 +123,132 @@ class ProjectsViewModel(application: Application) : AndroidViewModel(application
 
     fun consumeNotice() {
         _notice.value = null
+    }
+
+    fun toggleSelect(projectId: String) {
+        val current = _selectedIds.value.toMutableSet()
+        if (!current.add(projectId)) current.remove(projectId)
+        _selectedIds.value = current
+    }
+
+    fun clearSelection() {
+        _selectedIds.value = emptySet()
+    }
+
+    fun selectAll(ids: List<String>) {
+        _selectedIds.value = ids.toSet()
+    }
+
+    fun applyPresetToMany(ids: List<String>, presetId: String) {
+        if (ids.isEmpty()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val app = getApplication<Application>()
+                val preset = database.presetDao().getById(presetId)
+                val lutsDir = ProjectStore.lutsDir(app)
+                var applied = 0
+                for (id in ids) {
+                    val project = database.projectDao().getById(id) ?: continue
+                    val base = project.toEditParams()
+                    val merged = if (preset == null) {
+                        base
+                    } else {
+                        val recipe = PresetShare.readRecipeParams(lutsDir, preset.id)
+                            ?: EditParams.DEFAULT.copy(
+                                presetId = preset.id,
+                                presetIntensity = preset.defaultIntensity.coerceIn(0f, 1f)
+                            )
+                        var next = SettingGroups.applyCopy(recipe, base, SettingGroups.PRESET_GROUPS)
+                        if (recipe.presetId != null && LutRegistry.resolve(recipe.presetId) == null) {
+                            next = next.copy(presetId = null, presetIntensity = 1f)
+                        }
+                        next
+                    }
+                    if (merged == base) continue
+                    database.projectDao().upsert(
+                        project.withEditParams(merged).copy(updatedAt = System.currentTimeMillis())
+                    )
+                    applied++
+                }
+                _notice.value = if (applied == 0) "Nothing changed" else "Applied to $applied photo(s)"
+            } catch (e: Exception) {
+                _notice.value = e.message ?: "Could not apply preset"
+            }
+        }
+    }
+
+    fun pasteToMany(ids: List<String>) {
+        if (ids.isEmpty()) return
+        if (!SettingsClipboard.hasContent()) {
+            _notice.value = "Copy settings first (History screen)"
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                var applied = 0
+                for (id in ids) {
+                    val project = database.projectDao().getById(id) ?: continue
+                    val merged = SettingsClipboard.paste(project.toEditParams()) ?: continue
+                    if (merged == project.toEditParams()) continue
+                    database.projectDao().upsert(
+                        project.withEditParams(merged).copy(updatedAt = System.currentTimeMillis())
+                    )
+                    applied++
+                }
+                _notice.value = if (applied == 0) "Nothing changed" else "Pasted to $applied photo(s)"
+            } catch (e: Exception) {
+                _notice.value = e.message ?: "Could not paste settings"
+            }
+        }
+    }
+
+    fun startBatchExport(ids: List<String>, settings: ExportSettings? = null) {
+        if (ids.isEmpty() || _batchState.value.running) return
+        batchJob?.cancel()
+        batchJob = viewModelScope.launch(Dispatchers.IO) {
+            val app = getApplication<Application>()
+            _batchState.value = BatchUiState(running = true, total = ids.size)
+            val resolved = settings ?: BatchExporter.batchSettings(app)
+            runCatching { BatchExporter.ensureLutsLoaded(app) }
+            val results = ArrayList<BatchItemResult>(ids.size)
+            for (id in ids) {
+                try {
+                    withContext(Dispatchers.Default) {
+                        BatchExporter.exportProject(app, id, resolved)
+                    }
+                    results.add(BatchItemResult(id, true))
+                } catch (e: Exception) {
+                    if (e is kotlinx.coroutines.CancellationException) throw e
+                    results.add(BatchItemResult(id, false, e.message ?: "Export failed"))
+                }
+                _batchState.value = BatchUiState(
+                    running = true,
+                    done = results.size,
+                    total = ids.size,
+                    progress = BatchOps.progress(results.size, ids.size),
+                    results = results.toList()
+                )
+            }
+            _batchState.value = BatchUiState(
+                running = false,
+                done = results.size,
+                total = ids.size,
+                progress = 1f,
+                results = results.toList(),
+                summary = BatchOps.summarize(results)
+            )
+            _notice.value = BatchOps.summarize(results)
+        }
+    }
+
+    fun cancelBatchExport() {
+        batchJob?.cancel()
+        batchJob = null
+        _batchState.value = _batchState.value.copy(running = false)
+    }
+
+    fun clearBatchState() {
+        _batchState.value = BatchUiState()
     }
 
     fun toggleFavorite(project: Project) {

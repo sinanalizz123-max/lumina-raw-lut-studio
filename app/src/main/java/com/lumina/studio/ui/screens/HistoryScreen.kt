@@ -38,6 +38,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavController
 import com.lumina.studio.core.design.components.EmptyState
 import com.lumina.studio.core.design.components.EmptyStateIllustration
+import com.lumina.studio.core.batch.SettingsClipboard
 import com.lumina.studio.core.design.theme.LuminaAmber
 import com.lumina.studio.core.design.theme.LuminaCaptionTextStyle
 import com.lumina.studio.core.design.theme.LuminaMuted
@@ -208,6 +209,29 @@ private fun HistoryContent(
         )
         Text(
             text = "Tap a row to jump to its tool. Toggle to enable/disable a step (render skips disabled steps). Swipe left to reset a group. Changes auto-save via debounce persist (~300ms).",
+            style = LuminaCaptionTextStyle,
+            color = LuminaMuted
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            TextButton(
+                onClick = { SettingsClipboard.copy(vm.params.value) },
+                modifier = Modifier.heightIn(min = 48.dp)
+            ) { Text("Copy settings") }
+            TextButton(
+                onClick = {
+                    SettingsClipboard.paste(vm.params.value)?.let { pasted ->
+                        vm.applyExternalParams(pasted)
+                    }
+                },
+                modifier = Modifier.heightIn(min = 48.dp)
+            ) { Text("Paste settings") }
+        }
+        Text(
+            text = "Copy saves every group; paste skips masks unless they were included when copying.",
             style = LuminaCaptionTextStyle,
             color = LuminaMuted
         )

@@ -1,5 +1,6 @@
 package com.lumina.studio.ui.screens
 
+import android.content.Intent
 import android.graphics.Bitmap
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -28,6 +29,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.FavoriteBorder
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -58,6 +60,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavController
 import com.lumina.studio.core.data.local.Preset
 import com.lumina.studio.core.design.components.AppBottomSheet
+import com.lumina.studio.core.design.components.AppDialog
 import com.lumina.studio.core.design.components.CategoryChip
 import com.lumina.studio.core.design.components.EmptyState
 import com.lumina.studio.core.design.components.EmptyStateIllustration
@@ -71,6 +74,8 @@ import com.lumina.studio.core.design.theme.LuminaScrim
 import com.lumina.studio.core.design.theme.LuminaSectionHeaderTextStyle
 import com.lumina.studio.core.design.theme.LuminaSurfaceContainerLow
 import com.lumina.studio.core.edit.toEditParams
+import com.lumina.studio.core.export.Exporter
+import com.lumina.studio.core.lut.LutRenderer
 import com.lumina.studio.core.lut.PresetCategory
 import com.lumina.studio.core.util.ImageFiles
 import com.lumina.studio.ui.presets.PresetThumb
@@ -129,6 +134,26 @@ fun PresetsLibraryScreen(
         }
     }
 
+    val presetFilePicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            val text = withContext(Dispatchers.IO) {
+                presetsViewModel.readCubeText(uri)
+            }
+            if (text == null) {
+                presetsViewModel.notify("Could not read that preset file")
+            } else {
+                presetsViewModel.importShareJson(text)
+            }
+        }
+    }
+
+    var saveDialogOpen by remember { mutableStateOf(false) }
+    var saveName by remember { mutableStateOf("") }
+    var saveCategory by remember { mutableStateOf(PresetCategory.FILM) }
+
     val visible = presetsViewModel.filtered(presets, query, category)
     val activePresetId = project?.toEditParams()?.presetId
     val activeIntensity = project?.toEditParams()?.presetIntensity ?: 1f
@@ -179,6 +204,89 @@ fun PresetsLibraryScreen(
                         .weight(1f)
                         .heightIn(min = 48.dp)
                 ) { Text("Import pack") }
+            }
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedButton(
+                    onClick = {
+                        if (project == null) {
+                            presetsViewModel.notify("Import a photo first, then save its settings")
+                        } else {
+                            saveName = ""
+                            saveDialogOpen = true
+                        }
+                    },
+                    modifier = Modifier
+                        .weight(1f)
+                        .heightIn(min = 48.dp)
+                ) { Text("Save current as preset") }
+                OutlinedButton(
+                    onClick = { presetFilePicker.launch(arrayOf("application/json", "*/*")) },
+                    modifier = Modifier
+                        .weight(1f)
+                        .heightIn(min = 48.dp)
+                ) { Text("Import preset file") }
+            }
+            Text(
+                text = LutRenderer.LARGE_LUT_PREVIEW_NOTE + " Exports always render the full table.",
+                style = LuminaCaptionTextStyle,
+                color = LuminaMuted,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+            )
+            if (saveDialogOpen) {
+                AlertDialog(
+                    onDismissRequest = { saveDialogOpen = false },
+                    title = { Text("Save preset") },
+                    text = {
+                        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                            OutlinedTextField(
+                                value = saveName,
+                                onValueChange = { saveName = it },
+                                label = { Text("Preset name") },
+                                singleLine = true,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                PresetCategory.entries.forEach { entry ->
+                                    CategoryChip(
+                                        label = entry.label,
+                                        selected = saveCategory == entry,
+                                        onClick = { saveCategory = entry }
+                                    )
+                                }
+                            }
+                        }
+                    },
+                    confirmButton = {
+                        TextButton(
+                            onClick = {
+                                val target = project
+                                if (saveName.isNotBlank() && target != null) {
+                                    presetsViewModel.createPresetFromCurrent(
+                                        saveName, saveCategory, target.toEditParams()
+                                    )
+                                    saveDialogOpen = false
+                                }
+                            },
+                            modifier = Modifier.heightIn(min = 48.dp)
+                        ) { Text("Save") }
+                    },
+                    dismissButton = {
+                        TextButton(
+                            onClick = { saveDialogOpen = false },
+                            modifier = Modifier.heightIn(min = 48.dp)
+                        ) { Text("Cancel") }
+                    }
+                )
             }
             if (importError != null) {
                 Box(
@@ -273,6 +381,41 @@ fun PresetsLibraryScreen(
                                 project?.let { presetsViewModel.clearProjectPreset(it.id) }
                                 sheetVisible = false
                                 selectedPresetId = null
+                            },
+                            onRename = { name -> presetsViewModel.renamePreset(preset, name) },
+                            onDuplicate = { presetsViewModel.duplicatePreset(preset) },
+                            onDelete = {
+                                presetsViewModel.deletePreset(preset)
+                                sheetVisible = false
+                                if (selectedPresetId == preset.id) selectedPresetId = null
+                            },
+                            onShare = {
+                                presetsViewModel.buildShareFor(preset) { shared ->
+                                    if (shared == null) {
+                                        presetsViewModel.notify("Could not share that preset")
+                                        return@buildShareFor
+                                    }
+                                    scope.launch {
+                                        try {
+                                            val uri = withContext(Dispatchers.IO) {
+                                                Exporter.saveJsonToDownloads(
+                                                    context, shared.fileName, shared.json
+                                                )
+                                            }
+                                            shared.warning?.let { snackbar.showSnackbar(it) }
+                                            val send = Intent(Intent.ACTION_SEND).apply {
+                                                type = "application/json"
+                                                putExtra(Intent.EXTRA_STREAM, uri)
+                                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                            }
+                                            context.startActivity(
+                                                Intent.createChooser(send, "Share preset")
+                                            )
+                                        } catch (_: Exception) {
+                                            snackbar.showSnackbar("Sharing is not available")
+                                        }
+                                    }
+                                }
                             }
                         )
                     }
@@ -293,8 +436,15 @@ private fun PresetCard(
     onFavorite: () -> Unit,
     onIntensity: (Float) -> Unit,
     onDismissSheet: () -> Unit,
-    onReset: () -> Unit
+    onReset: () -> Unit,
+    onRename: (String) -> Unit,
+    onDuplicate: () -> Unit,
+    onDelete: () -> Unit,
+    onShare: () -> Unit
 ) {
+    var renameOpen by remember(preset.id) { mutableStateOf(false) }
+    var renameText by remember(preset.id) { mutableStateOf(preset.name) }
+    var deleteConfirm by remember(preset.id) { mutableStateOf(false) }
     val cardShape = RoundedCornerShape(16.dp)
     Card(
         onClick = onTap,
@@ -385,8 +535,89 @@ private fun PresetCard(
                             onClick = onReset,
                             modifier = Modifier.heightIn(min = 48.dp)
                         ) { Text("Reset preset") }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            TextButton(
+                                onClick = {
+                                    renameText = preset.name
+                                    renameOpen = true
+                                },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .heightIn(min = 48.dp)
+                            ) { Text("Rename") }
+                            TextButton(
+                                onClick = onDuplicate,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .heightIn(min = 48.dp)
+                            ) { Text("Duplicate") }
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            TextButton(
+                                onClick = onShare,
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .heightIn(min = 48.dp)
+                            ) { Text("Share") }
+                            TextButton(
+                                onClick = { deleteConfirm = true },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .heightIn(min = 48.dp)
+                            ) { Text("Delete") }
+                        }
                     }
                 }
+            }
+            if (renameOpen) {
+                AlertDialog(
+                    onDismissRequest = { renameOpen = false },
+                    title = { Text("Rename preset") },
+                    text = {
+                        OutlinedTextField(
+                            value = renameText,
+                            onValueChange = { renameText = it },
+                            label = { Text("Preset name") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    },
+                    confirmButton = {
+                        TextButton(
+                            onClick = {
+                                if (renameText.isNotBlank()) {
+                                    onRename(renameText)
+                                    renameOpen = false
+                                }
+                            },
+                            modifier = Modifier.heightIn(min = 48.dp)
+                        ) { Text("Rename") }
+                    },
+                    dismissButton = {
+                        TextButton(
+                            onClick = { renameOpen = false },
+                            modifier = Modifier.heightIn(min = 48.dp)
+                        ) { Text("Cancel") }
+                    }
+                )
+            }
+            if (deleteConfirm) {
+                AppDialog(
+                    title = "Delete preset?",
+                    message = "“${preset.name}” will be removed, including its saved LUT file.",
+                    confirmLabel = "Delete",
+                    onDismiss = { deleteConfirm = false },
+                    onConfirm = {
+                        deleteConfirm = false
+                        onDelete()
+                    }
+                )
             }
         }
     }

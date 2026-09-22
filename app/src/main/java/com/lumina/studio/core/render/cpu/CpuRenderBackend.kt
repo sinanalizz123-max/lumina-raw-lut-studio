@@ -32,7 +32,9 @@ class CpuRenderBackend : RenderBackend<Bitmap> {
             // -> FINAL sRGB-math/F16 intermediates). Export therefore always
             // takes the high-precision path via CpuExportRenderer.
             val quality = request.quality ?: qualityForTarget(request.target)
-            RenderResult.Ok(PreviewRenderer.render(src, request.params, request.lut, quality))
+            RenderResult.Ok(
+                PreviewRenderer.render(src, request.params, request.lut, quality, request.fullLut)
+            )
         } catch (_: OutOfMemoryError) {
             RenderResult.OomBudget
         } catch (e: Exception) {

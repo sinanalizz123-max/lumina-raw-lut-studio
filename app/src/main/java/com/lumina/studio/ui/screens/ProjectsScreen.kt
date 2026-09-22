@@ -21,25 +21,32 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.StarBorder
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -65,17 +72,43 @@ import java.io.File
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ProjectsScreen(navController: NavController, projectsViewModel: ProjectsViewModel = viewModel()) {
+fun ProjectsScreen(
+    navController: NavController,
+    projectsViewModel: ProjectsViewModel = viewModel(),
+    presetsViewModel: PresetsViewModel = viewModel()
+) {
     val uiState by projectsViewModel.uiState.collectAsState()
     val notice by projectsViewModel.notice.collectAsState()
+    val selectedIds by projectsViewModel.selectedIds.collectAsState()
+    val batchState by projectsViewModel.batchState.collectAsState()
+    val presets by presetsViewModel.presets.collectAsState()
+    val presetMessage by presetsViewModel.message.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
+    var selectMode by remember { mutableStateOf(false) }
+    var presetPickerOpen by remember { mutableStateOf(false) }
 
     LaunchedEffect(notice) {
         if (notice != null) {
             snackbarHostState.showSnackbar(notice!!)
             projectsViewModel.consumeNotice()
         }
+    }
+
+    LaunchedEffect(presetMessage) {
+        if (presetMessage != null) {
+            snackbarHostState.showSnackbar(presetMessage!!)
+            presetsViewModel.consumeMessage()
+        }
+    }
+
+    LaunchedEffect(uiState.projects) {
+        val alive = uiState.projects.map { it.id }.toSet()
+        val stale = selectedIds.filterNot { it in alive }
+        if (stale.isNotEmpty()) {
+            for (id in stale) projectsViewModel.toggleSelect(id)
+        }
+        if (uiState.projects.isEmpty()) selectMode = false
     }
 
     Scaffold(
@@ -123,6 +156,88 @@ fun ProjectsScreen(navController: NavController, projectsViewModel: ProjectsView
                     selected = uiState.favoritesOnly,
                     onClick = { projectsViewModel.toggleFavoritesOnly() }
                 )
+                Spacer(modifier = Modifier.width(4.dp))
+                CategoryChip(
+                    label = if (selectMode) "Done" else "Select",
+                    selected = selectMode,
+                    onClick = {
+                        selectMode = !selectMode
+                        if (!selectMode) projectsViewModel.clearSelection()
+                    }
+                )
+            }
+            if (selectMode && selectedIds.isNotEmpty()) {
+                Text(
+                    text = "${selectedIds.size} selected. Location tags follow your Export settings (off by default).",
+                    style = LuminaCaptionTextStyle,
+                    color = LuminaMuted
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = { presetPickerOpen = true },
+                        modifier = Modifier
+                            .weight(1f)
+                            .heightIn(min = 48.dp)
+                    ) { Text("Apply preset") }
+                    OutlinedButton(
+                        onClick = {
+                            projectsViewModel.pasteToMany(selectedIds.toList())
+                        },
+                        modifier = Modifier
+                            .weight(1f)
+                            .heightIn(min = 48.dp)
+                    ) { Text("Paste") }
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = {
+                            projectsViewModel.startBatchExport(selectedIds.toList())
+                        },
+                        enabled = !batchState.running,
+                        modifier = Modifier
+                            .weight(1f)
+                            .heightIn(min = 48.dp)
+                    ) { Text(if (batchState.running) "Exporting…" else "Export") }
+                    OutlinedButton(
+                        onClick = { projectsViewModel.clearSelection() },
+                        modifier = Modifier
+                            .weight(1f)
+                            .heightIn(min = 48.dp)
+                    ) { Text("Clear") }
+                }
+                if (batchState.running) {
+                    LinearProgressIndicator(
+                        progress = { batchState.progress.coerceIn(0f, 1f) },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    TextButton(
+                        onClick = { projectsViewModel.cancelBatchExport() },
+                        modifier = Modifier.heightIn(min = 48.dp)
+                    ) { Text("Cancel batch") }
+                }
+                if (!batchState.running && batchState.summary != null) {
+                    Text(
+                        text = batchState.summary!!,
+                        style = LuminaCaptionTextStyle,
+                        color = LuminaMuted
+                    )
+                    val failures = batchState.results.filterNot { it.ok }
+                    if (failures.isNotEmpty()) {
+                        Text(
+                            text = failures.take(3).joinToString("\n") {
+                                "• ${it.projectId}: ${it.error ?: "failed"}"
+                            },
+                            style = LuminaCaptionTextStyle,
+                            color = LuminaMuted
+                        )
+                    }
+                }
             }
             if (uiState.projects.isEmpty()) {
                 val filtered = uiState.query.isNotBlank() || uiState.favoritesOnly
@@ -144,7 +259,16 @@ fun ProjectsScreen(navController: NavController, projectsViewModel: ProjectsView
                         ProjectRow(
                             project = project,
                             editCount = uiState.editCounts[project.id] ?: 0,
-                            onOpen = { navController.navigate(Routes.projectDetail(project.id)) },
+                            selected = project.id in selectedIds,
+                            showSelect = selectMode,
+                            onToggleSelect = { projectsViewModel.toggleSelect(project.id) },
+                            onOpen = {
+                                if (selectMode) {
+                                    projectsViewModel.toggleSelect(project.id)
+                                } else {
+                                    navController.navigate(Routes.projectDetail(project.id))
+                                }
+                            },
                             onToggleFavorite = { projectsViewModel.toggleFavorite(project) },
                             onDuplicate = { projectsViewModel.duplicate(project) },
                             onDelete = {
@@ -181,6 +305,47 @@ fun ProjectsScreen(navController: NavController, projectsViewModel: ProjectsView
                     }
                 }
             }
+            if (presetPickerOpen) {
+                AlertDialog(
+                    onDismissRequest = { presetPickerOpen = false },
+                    title = { Text("Apply preset to ${selectedIds.size} photo(s)") },
+                    text = {
+                        LazyColumn(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            if (presets.isEmpty()) {
+                                item { Text("No presets installed.") }
+                            }
+                            items(presets, key = { it.id }) { preset ->
+                                TextButton(
+                                    onClick = {
+                                        projectsViewModel.applyPresetToMany(
+                                            selectedIds.toList(), preset.id
+                                        )
+                                        presetPickerOpen = false
+                                    },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .heightIn(min = 48.dp)
+                                ) {
+                                    Text(
+                                        "${preset.name} • ${preset.category}",
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                }
+                            }
+                        }
+                    },
+                    confirmButton = {},
+                    dismissButton = {
+                        TextButton(
+                            onClick = { presetPickerOpen = false },
+                            modifier = Modifier.heightIn(min = 48.dp)
+                        ) { Text("Cancel") }
+                    }
+                )
+            }
         }
     }
 }
@@ -193,7 +358,10 @@ fun ProjectRow(
     onToggleFavorite: () -> Unit,
     onDuplicate: () -> Unit,
     onDelete: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    selected: Boolean = false,
+    showSelect: Boolean = false,
+    onToggleSelect: () -> Unit = {}
 ) {
     Card(
         modifier = modifier
@@ -206,6 +374,13 @@ fun ProjectRow(
         )
     ) {
         Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            if (showSelect) {
+                Checkbox(
+                    checked = selected,
+                    onCheckedChange = { onToggleSelect() },
+                    modifier = Modifier.size(48.dp)
+                )
+            }
             val model: Any? = project.photoUri?.let { path ->
                 val file = File(path)
                 if (file.exists()) file else path

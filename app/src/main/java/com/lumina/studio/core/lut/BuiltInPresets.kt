@@ -1,7 +1,6 @@
 package com.lumina.studio.core.lut
 
 import android.graphics.Bitmap
-import java.util.concurrent.ConcurrentHashMap
 
 enum class PresetCategory(val label: String) {
     CINEMATIC("Cinematic"),
@@ -123,28 +122,85 @@ object BuiltInPresets {
 }
 
 object LutRegistry {
-    private val cache = ConcurrentHashMap<String, LutCube>()
+    const val MAX_ENTRIES = LutLimits.REGISTRY_MAX_ENTRIES
+
+    private val lock = Any()
+    private val cache = object : LinkedHashMap<String, LutCube>(
+        LutLimits.REGISTRY_MAX_ENTRIES, 0.75f, true
+    ) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, LutCube>?): Boolean {
+            if (size <= MAX_ENTRIES) return false
+            val key = eldest?.key
+            if (key != null && isBuiltinId(key)) return false
+            return true
+        }
+    }
 
     init {
         for (preset in BuiltInPresets.list) cache[preset.id] = preset.lut
     }
 
-    fun resolve(id: String?): LutCube? = id?.let { cache[it] }
+    private fun isBuiltinId(id: String): Boolean = id.startsWith("builtin_")
+
+    fun resolve(id: String?): LutCube? {
+        if (id.isNullOrBlank()) return null
+        synchronized(lock) { cache[id]?.let { return it } }
+        val builtin = BuiltInPresets.byId(id)?.lut
+        if (builtin != null) {
+            register(id, builtin)
+            return builtin
+        }
+        return null
+    }
 
     fun register(id: String, lut: LutCube) {
-        cache[id] = lut
+        if (id.isBlank()) return
+        synchronized(lock) {
+            cache[id] = lut
+            evictOverflow()
+        }
     }
 
     fun registerParsed(id: String, cubeText: String?): LutCube? {
-        if (id.isBlank() || cubeText.isNullOrBlank()) return cache[id]
-        cache[id]?.let { return it }
+        if (id.isBlank() || cubeText.isNullOrBlank()) {
+            synchronized(lock) { return cache[id] }
+        }
+        if (LutLimits.isFileRef(cubeText)) {
+            synchronized(lock) { return cache[id] }
+        }
+        synchronized(lock) { cache[id]?.let { return it } }
         return when (val result = CubeParser.parse(cubeText)) {
             is CubeParseResult.Ok -> {
-                cache[id] = result.lut
+                register(id, result.lut)
                 result.lut
             }
-            is CubeParseResult.Err -> cache[id]
+            is CubeParseResult.Err -> synchronized(lock) { cache[id] }
         }
+    }
+
+    fun unregister(id: String) {
+        if (isBuiltinId(id)) return
+        synchronized(lock) { cache.remove(id) }
+    }
+
+    fun entryCount(): Int = synchronized(lock) { cache.size }
+
+    fun estimatedBytes(): Long = synchronized(lock) {
+        cache.values.fold(0L) { acc, lut -> acc + lut.data.size.toLong() * 4L }
+    }
+
+    fun clearTransient() {
+        synchronized(lock) {
+            val transient = cache.keys.filterNot { isBuiltinId(it) }
+            for (key in transient) cache.remove(key)
+        }
+    }
+
+    private fun evictOverflow() {
+        if (cache.size <= MAX_ENTRIES) return
+        val eldest = cache.keys.firstOrNull { !isBuiltinId(it) } ?: return
+        cache.remove(eldest)
+        if (cache.size > MAX_ENTRIES) evictOverflow()
     }
 }
 

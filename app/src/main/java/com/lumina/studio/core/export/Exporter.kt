@@ -343,6 +343,7 @@ object Exporter {
         val safeVersion = appVersion.replace("\\", "\\\\").replace("\"", "\\\"")
         return "{\"app\":\"Lumina RAW & LUT Studio\"," +
             "\"appVersion\":\"$safeVersion\"," +
+            "\"schemaVersion\":" + Sidecar.SCHEMA_VERSION + "," +
             "\"workflow\":\"raw-compatible\"," +
             "\"sourceFile\":\"$safeSource\"," +
             "\"recipe\":$recipe," +
@@ -374,6 +375,14 @@ object Exporter {
     ): Uri = withContext(Dispatchers.IO) {
         val json = buildSidecarJson(params, appVersionName(context), sourceName)
         saveRawBytes(context, json.toByteArray(Charsets.UTF_8), sidecarName, "application/json")
+    }
+
+    suspend fun saveJsonToDownloads(
+        context: Context,
+        fileName: String,
+        json: String
+    ): Uri = withContext(Dispatchers.IO) {
+        saveRawBytes(context, json.toByteArray(Charsets.UTF_8), fileName, "application/json")
     }
 
     private fun readSourceBytes(context: Context, sourcePath: String?): ByteArray? {

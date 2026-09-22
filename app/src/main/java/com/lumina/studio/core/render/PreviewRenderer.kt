@@ -188,13 +188,18 @@ object PreviewRenderer {
         src: Bitmap,
         params: EditParams,
         lut: LutCube? = null,
-        quality: RenderQuality = RenderQuality.PREVIEW
+        quality: RenderQuality = RenderQuality.PREVIEW,
+        fullLut: Boolean = false
     ): Bitmap {
         val steps = params.steps
         val useLut = lut != null && params.presetId != null && params.presetIntensity > 0f &&
             steps.get(StepKey.PRESET) && steps.get(StepKey.LUT)
         val graded = if (useLut) {
-            LutRenderer.applyLut(src, lut, params.presetIntensity, workingConfig(quality))
+            if (fullLut) {
+                LutRenderer.applyLutFull(src, lut, params.presetIntensity, workingConfig(quality))
+            } else {
+                LutRenderer.applyLut(src, lut, params.presetIntensity, workingConfig(quality))
+            }
         } else {
             src
         }

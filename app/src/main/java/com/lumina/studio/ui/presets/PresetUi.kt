@@ -12,7 +12,10 @@ import androidx.compose.ui.layout.ContentScale
 import com.lumina.studio.core.data.local.Preset
 import com.lumina.studio.core.edit.EditParams
 import com.lumina.studio.core.lut.BuiltInPresets
+import com.lumina.studio.core.lut.CubeParseResult
+import com.lumina.studio.core.lut.CubeParser
 import com.lumina.studio.core.lut.LutCube
+import com.lumina.studio.core.lut.LutLimits
 import com.lumina.studio.core.lut.LutRegistry
 import com.lumina.studio.core.lut.SampleImage
 import com.lumina.studio.core.render.RenderRequest
@@ -22,13 +25,28 @@ import com.lumina.studio.core.render.cpu.RenderBackends
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-fun resolvePresetLut(preset: Preset): LutCube? {
+fun resolvePresetLut(preset: Preset): LutCube? = resolvePresetLut(preset, null)
+
+fun resolvePresetLut(preset: Preset, lutsDir: java.io.File?): LutCube? {
     LutRegistry.resolve(preset.id)?.let { return it }
     BuiltInPresets.byId(preset.id)?.let {
         LutRegistry.register(it.id, it.lut)
         return it.lut
     }
-    return LutRegistry.registerParsed(preset.id, preset.cubeText)
+    val cubeText = preset.cubeText
+    if (LutLimits.isFileRef(cubeText)) {
+        val fileName = LutLimits.fileNameFromRef(cubeText) ?: return LutRegistry.resolve(preset.id)
+        val dir = lutsDir ?: return LutRegistry.resolve(preset.id)
+        val text = LutLimits.readBoundedFile(java.io.File(dir, fileName)) ?: return null
+        return when (val result = CubeParser.parse(text, preset.name)) {
+            is CubeParseResult.Ok -> {
+                LutRegistry.register(preset.id, result.lut)
+                result.lut
+            }
+            is CubeParseResult.Err -> null
+        }
+    }
+    return LutRegistry.registerParsed(preset.id, cubeText)
 }
 
 fun downsampleMax(src: Bitmap, maxDim: Int): Bitmap {

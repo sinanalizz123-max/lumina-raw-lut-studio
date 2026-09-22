@@ -13,7 +13,10 @@ data class RenderRequest<B : Any>(
     // [qualityForTarget], so every existing 5-arg caller keeps working with its
     // current behavior. Only callers that need FINAL on a Preview-sized frame
     // (or vice versa) pass this explicitly.
-    val quality: RenderQuality? = null
+    val quality: RenderQuality? = null,
+    // M10 export parity: false (default) renders large LUTs through the
+    // downsampled preview table; true renders the FULL table (export path).
+    val fullLut: Boolean = false
 )
 
 sealed interface RenderResult<out B : Any> {
