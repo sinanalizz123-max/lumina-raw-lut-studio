@@ -22,6 +22,7 @@ object StorageMigration {
         }
         try {
             withContext(Dispatchers.IO) {
+                ProjectStore.purgeTrash(app)
                 val database = DatabaseProvider.get(app)
                 val dao = database.projectDao()
                 val projects = dao.getAll()
