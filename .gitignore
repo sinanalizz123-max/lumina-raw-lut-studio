@@ -1,3 +1,7 @@
+# Build outputs / APKs (never commit binaries)
+*.apk
+*.aab
+*.ap_
 # Gradle / build outputs
 .gradle/
 build/
