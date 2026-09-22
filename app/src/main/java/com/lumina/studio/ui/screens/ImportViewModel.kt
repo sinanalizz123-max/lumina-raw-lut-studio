@@ -176,35 +176,35 @@ class ImportViewModel(application: Application) : AndroidViewModel(application) 
         val cached: File = ProjectStore.copyUriToOriginal(context, projectId, uri, displayName)
             ?: return ImportResult.Error("Could not read that file.")
         try {
-        var previewOnly = staticPreviewOnly
-        var previewNote = staticNote
-        if (extension == "dng") {
-            val probed = probeDngDevelopability(cached)
-            if (probed != null) {
-                previewOnly = !probed.first
-                previewNote = probed.second
+            var previewOnly = staticPreviewOnly
+            var previewNote = staticNote
+            if (extension == "dng") {
+                val probed = probeDngDevelopability(cached)
+                if (probed != null) {
+                    previewOnly = !probed.first
+                    previewNote = probed.second
+                }
             }
-        }
-        // decodeBounds returns DISPLAYED (orientation-normalized) dimensions,
-        // matching what PreviewRenderer.decodePreview renders downstream.
-        val bounds = ImageFiles.decodeBounds(cached)
-        val exif = ExifReader.read(cached)
-        val isRaw = ImageFiles.isRaw(extension)
-        val now = System.currentTimeMillis()
-        val project = Project(
-            id = projectId,
-            name = displayName.ifBlank { cached.name },
-            photoUri = cached.absolutePath,
-            createdAt = now,
-            updatedAt = now,
-            fileType = ImageFiles.typeBadge(extension, mime),
-            mimeType = mime,
-            width = bounds.width,
-            height = bounds.height
-        )
-            database.projectDao().upsert(project)
-            EditHistoryLog.log(database, project.id, EditHistoryLog.IMPORT)
-            return ImportResult.Success(project.id, isRaw, exif, previewOnly, previewNote)
+            // decodeBounds returns DISPLAYED (orientation-normalized) dimensions,
+            // matching what PreviewRenderer.decodePreview renders downstream.
+            val bounds = ImageFiles.decodeBounds(cached)
+            val exif = ExifReader.read(cached)
+            val isRaw = ImageFiles.isRaw(extension)
+            val now = System.currentTimeMillis()
+            val project = Project(
+                id = projectId,
+                name = displayName.ifBlank { cached.name },
+                photoUri = cached.absolutePath,
+                createdAt = now,
+                updatedAt = now,
+                fileType = ImageFiles.typeBadge(extension, mime),
+                mimeType = mime,
+                width = bounds.width,
+                height = bounds.height
+            )
+                database.projectDao().upsert(project)
+                EditHistoryLog.log(database, project.id, EditHistoryLog.IMPORT)
+                return ImportResult.Success(project.id, isRaw, exif, previewOnly, previewNote)
         } catch (t: Throwable) {
             runCatching { ProjectStore.deleteProjectFiles(context, projectId) }
             throw t
