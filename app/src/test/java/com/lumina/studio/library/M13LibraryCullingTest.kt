@@ -367,7 +367,7 @@ class M13LibraryCullingTest {
 
     @Test
     fun `scoreFrame flags synthetic frames end to end`() {
-        val flatBlack = CullScoring.scoreFrame(IntArray(8 * 8) { 0xFF000000 }, 8, 8)!!
+        val flatBlack = CullScoring.scoreFrame(IntArray(8 * 8) { 0xFF000000.toInt() }, 8, 8)!!
         assertTrue(flatBlack.blurry)
         assertTrue(flatBlack.underexposed)
         val flatWhite = CullScoring.scoreFrame(IntArray(8 * 8) { -1 }, 8, 8)!!
