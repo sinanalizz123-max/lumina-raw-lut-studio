@@ -1999,20 +1999,32 @@ object PreviewRenderer {
             val w = src.width
             val h = src.height
             if (w <= 0 || h <= 0) return out
-            val total = w * h
-            val step = maxOf(1, total / HISTOGRAM_SAMPLE_CAP)
-            val pixels = IntArray(total)
-            src.getPixels(pixels, 0, w, 0, 0, w, h)
-            var i = 0
-            while (i < total) {
-            val pixel = pixels[i]
-            val r = (pixel shr 16) and 0xFF
-            val g = (pixel shr 8) and 0xFF
-            val b = pixel and 0xFF
-            out[0][(r * bins) ushr 8]++
-            out[1][(g * bins) ushr 8]++
-            out[2][(b * bins) ushr 8]++
-            i += step
+            val total = w.toLong() * h.toLong()
+            if (total <= 0L) return out
+            val sampleW = minOf(w, kotlin.math.sqrt(HISTOGRAM_SAMPLE_CAP.toDouble()).toInt().coerceAtLeast(1))
+            val sampleH = minOf(h, (HISTOGRAM_SAMPLE_CAP / sampleW).coerceAtLeast(1))
+            val stepX = maxOf(1, (w + sampleW - 1) / sampleW)
+            val stepY = maxOf(1, (h + sampleH - 1) / sampleH)
+            val rowWidth = minOf(sampleW, w)
+            val pixels = IntArray(rowWidth)
+            var y = 0
+            while (y < h) {
+                var x = 0
+                while (x < w) {
+                    val count = minOf(rowWidth, w - x)
+                    src.getPixels(pixels, 0, rowWidth, x, y, count, 1)
+                    for (i in 0 until count) {
+                        val pixel = pixels[i]
+                        val r = (pixel shr 16) and 0xFF
+                        val g = (pixel shr 8) and 0xFF
+                        val b = pixel and 0xFF
+                        out[0][(r * bins) ushr 8]++
+                        out[1][(g * bins) ushr 8]++
+                        out[2][(b * bins) ushr 8]++
+                    }
+                    x += stepX * rowWidth
+                }
+                y += stepY
             }
             out
         } catch (_: OutOfMemoryError) {

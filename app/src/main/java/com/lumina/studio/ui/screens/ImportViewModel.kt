@@ -85,24 +85,29 @@ class ImportViewModel(application: Application) : AndroidViewModel(application) 
                 runCatching {
                     val app = getApplication<Application>()
                     val projectId = UUID.randomUUID().toString()
-                    val file = ProjectStore.saveBitmapToOriginal(app, projectId, bitmap, baseName)
-                        ?: throw IllegalStateException("Could not save camera photo")
-                    val bounds = ImageFiles.decodeBounds(file)
-                    val now = System.currentTimeMillis()
-                    val project = Project(
-                        id = projectId,
-                        name = "$baseName.jpg",
-                        photoUri = file.absolutePath,
-                        createdAt = now,
-                        updatedAt = now,
-                        fileType = "JPEG",
-                        mimeType = "image/jpeg",
-                        width = bounds.width,
-                        height = bounds.height
-                    )
-                    database.projectDao().upsert(project)
-                    EditHistoryLog.log(database, project.id, EditHistoryLog.IMPORT)
-                    ImportResult.Success(project.id, false, ExifInfo())
+                    try {
+                        val file = ProjectStore.saveBitmapToOriginal(app, projectId, bitmap, baseName)
+                            ?: throw IllegalStateException("Could not save camera photo")
+                        val bounds = ImageFiles.decodeBounds(file)
+                        val now = System.currentTimeMillis()
+                        val project = Project(
+                            id = projectId,
+                            name = "$baseName.jpg",
+                            photoUri = file.absolutePath,
+                            createdAt = now,
+                            updatedAt = now,
+                            fileType = "JPEG",
+                            mimeType = "image/jpeg",
+                            width = bounds.width,
+                            height = bounds.height
+                        )
+                        database.projectDao().upsert(project)
+                        EditHistoryLog.log(database, project.id, EditHistoryLog.IMPORT)
+                        ImportResult.Success(project.id, false, ExifInfo())
+                    } catch (t: Throwable) {
+                        runCatching { ProjectStore.deleteProjectFiles(app, projectId) }
+                        throw t
+                    }
                 }.getOrElse { e -> ImportResult.Error(e.message ?: "Import failed") }
             }
             when (result) {
@@ -170,35 +175,40 @@ class ImportViewModel(application: Application) : AndroidViewModel(application) 
         val projectId = UUID.randomUUID().toString()
         val cached: File = ProjectStore.copyUriToOriginal(context, projectId, uri, displayName)
             ?: return ImportResult.Error("Could not read that file.")
-        var previewOnly = staticPreviewOnly
-        var previewNote = staticNote
-        if (extension == "dng") {
-            val probed = probeDngDevelopability(cached)
-            if (probed != null) {
-                previewOnly = !probed.first
-                previewNote = probed.second
+        try {
+            var previewOnly = staticPreviewOnly
+            var previewNote = staticNote
+            if (extension == "dng") {
+                val probed = probeDngDevelopability(cached)
+                if (probed != null) {
+                    previewOnly = !probed.first
+                    previewNote = probed.second
+                }
             }
+            // decodeBounds returns DISPLAYED (orientation-normalized) dimensions,
+            // matching what PreviewRenderer.decodePreview renders downstream.
+            val bounds = ImageFiles.decodeBounds(cached)
+            val exif = ExifReader.read(cached)
+            val isRaw = ImageFiles.isRaw(extension)
+            val now = System.currentTimeMillis()
+            val project = Project(
+                id = projectId,
+                name = displayName.ifBlank { cached.name },
+                photoUri = cached.absolutePath,
+                createdAt = now,
+                updatedAt = now,
+                fileType = ImageFiles.typeBadge(extension, mime),
+                mimeType = mime,
+                width = bounds.width,
+                height = bounds.height
+            )
+            database.projectDao().upsert(project)
+            EditHistoryLog.log(database, project.id, EditHistoryLog.IMPORT)
+            return ImportResult.Success(project.id, isRaw, exif, previewOnly, previewNote)
+        } catch (t: Throwable) {
+            runCatching { ProjectStore.deleteProjectFiles(context, projectId) }
+            throw t
         }
-        // decodeBounds returns DISPLAYED (orientation-normalized) dimensions,
-        // matching what PreviewRenderer.decodePreview renders downstream.
-        val bounds = ImageFiles.decodeBounds(cached)
-        val exif = ExifReader.read(cached)
-        val isRaw = ImageFiles.isRaw(extension)
-        val now = System.currentTimeMillis()
-        val project = Project(
-            id = projectId,
-            name = displayName.ifBlank { cached.name },
-            photoUri = cached.absolutePath,
-            createdAt = now,
-            updatedAt = now,
-            fileType = ImageFiles.typeBadge(extension, mime),
-            mimeType = mime,
-            width = bounds.width,
-            height = bounds.height
-        )
-        database.projectDao().upsert(project)
-        EditHistoryLog.log(database, project.id, EditHistoryLog.IMPORT)
-        return ImportResult.Success(project.id, isRaw, exif, previewOnly, previewNote)
     }
 
     private fun probeDngDevelopability(file: File): Pair<Boolean, String>? {
@@ -208,11 +218,17 @@ class ImportViewModel(application: Application) : AndroidViewModel(application) 
             } catch (_: Exception) {
                 return null
             }
-            if (len <= 0L || len > 120_000_000L) return null
+            // DngParser requires a complete byte array today because TIFF strip
+            // offsets are validated against the complete file. Never allocate a
+            // large RAW just for an informational import-time capability probe.
+            val maxProbeBytes = 32_000_000L
+            if (len <= 0L || len > maxProbeBytes) {
+                return Pair(false, "RAW capability will be checked when opened")
+            }
             val bytes = try {
                 file.readBytes()
             } catch (_: OutOfMemoryError) {
-                return null
+                return Pair(false, "RAW capability will be checked when opened")
             } catch (_: Exception) {
                 return null
             }

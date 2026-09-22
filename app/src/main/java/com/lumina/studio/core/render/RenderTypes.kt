@@ -83,7 +83,8 @@ object MemoryBudget {
     // M16 large-image policy (§3): tile-first above TILE_FIRST_PIXELS, decode
     // caps per surface, graceful refusal above MAX_RENDER_PIXELS. Values are
     // pure pixel math (no android.*) so JVM tests pin them; see
-    // PERFORMANCE.md for the on-device byte budgets.
+    // PERFORMANCE.md for the on-device byte budgets. All multiplications
+    // below saturate (never overflow) so hostile dimensions fail safe.
     const val PIXELS_12MP = 12_000_000L
     const val PIXELS_24MP = 24_000_000L
     const val PIXELS_48MP = 48_000_000L
@@ -103,9 +104,12 @@ object MemoryBudget {
      */
     fun tiffWorkingBytes(width: Int, height: Int): Long {
         if (width <= 0 || height <= 0) return 0L
-        val pixels = width.toLong() * height.toLong()
-        return pixels * (BYTES_PER_PIXEL_ARGB_8888 + 2 * BYTES_PER_PIXEL_RGB_TIFF) +
+        val pixels = saturatingMultiply(width.toLong(), height.toLong())
+        val bytesPerPixel = BYTES_PER_PIXEL_ARGB_8888 + 2L * BYTES_PER_PIXEL_RGB_TIFF
+        return saturatingAdd(
+            saturatingMultiply(pixels, bytesPerPixel),
             com.lumina.studio.core.export.TiffWriter.TIFF_FILE_OVERHEAD_BYTES
+        )
     }
 
     /** True when the TIFF path would exceed [capBytes] working memory. */
@@ -117,15 +121,22 @@ object MemoryBudget {
     /**
      * M16 strip math (pure): row count per horizontal band so each band's
      * pixel buffer stays under [maxStripBytes]. Returns at least 1 row and
-     * at most [height]. Used by documentation/tests; the single-strip TIFF
-     * writer stays authoritative for output bytes.
+     * at most [height]. Clamped in Long BEFORE toInt (huge caps like
+     * Long.MAX_VALUE would otherwise overflow Int). Used by
+     * documentation/tests; the single-strip TIFF writer stays authoritative
+     * for output bytes.
      */
-    fun stripRowsFor(width: Int, height: Int, maxStripBytes: Long, bytesPerPixel: Long = BYTES_PER_PIXEL_ARGB_8888): Int {
-        if (width <= 0 || height <= 0 || maxStripBytes <= 0L || bytesPerPixel <= 0L) return height.coerceAtLeast(1)
+    fun stripRowsFor(
+        width: Int,
+        height: Int,
+        maxStripBytes: Long,
+        bytesPerPixel: Long = BYTES_PER_PIXEL_ARGB_8888
+    ): Int {
+        if (width <= 0 || height <= 0 || maxStripBytes <= 0L || bytesPerPixel <= 0L) {
+            return height.coerceAtLeast(1)
+        }
         val rowBytes = width.toLong() * bytesPerPixel
         if (rowBytes <= 0L) return height
-        // Clamp in Long BEFORE toInt: huge caps (e.g. Long.MAX_VALUE) would
-        // otherwise overflow Int and collapse to 1 (M16 CI fix).
         return (maxStripBytes / rowBytes).coerceIn(1L, height.toLong()).toInt()
     }
 
@@ -133,22 +144,42 @@ object MemoryBudget {
      * M16 decode-sample math (pure): power-of-two inSampleSize so the
      * longest edge fits in [maxDim]. Mirrors BitmapFactoryDecoder behavior
      * for tests without android.*.
+     *
+     * Returns a positive power-of-two sample. The largest representable
+     * inSampleSize is 2^30; for the theoretical Int.MAX_VALUE edge case,
+     * that is the safe ceiling without overflowing an Int.
      */
     fun sampleFor(longestEdge: Int, maxDim: Int): Int {
         if (longestEdge <= 0 || maxDim <= 0) return 1
         var sample = 1
-        while (longestEdge / sample > maxDim) sample *= 2
+        while (longestEdge.toLong() / sample.toLong() > maxDim.toLong()) {
+            if (sample >= (1 shl 30)) return (1 shl 30)
+            sample = sample shl 1
+        }
         return sample
     }
 
     fun bytesFor(width: Int, height: Int, bytesPerPixel: Long = BYTES_PER_PIXEL_ARGB_8888): Long {
         if (width <= 0 || height <= 0 || bytesPerPixel <= 0L) return 0L
-        return width.toLong() * height.toLong() * bytesPerPixel
+        return saturatingMultiply(
+            saturatingMultiply(width.toLong(), height.toLong()),
+            bytesPerPixel
+        )
     }
 
     fun exceeds(width: Int, height: Int, capPixels: Long = MAX_RENDER_PIXELS): Boolean {
         if (width <= 0 || height <= 0) return false
-        return width.toLong() * height.toLong() > capPixels
+        return saturatingMultiply(width.toLong(), height.toLong()) > capPixels
+    }
+
+    private fun saturatingMultiply(a: Long, b: Long): Long {
+        if (a <= 0L || b <= 0L) return 0L
+        return if (a > Long.MAX_VALUE / b) Long.MAX_VALUE else a * b
+    }
+
+    private fun saturatingAdd(a: Long, b: Long): Long {
+        if (a >= Long.MAX_VALUE - b) return Long.MAX_VALUE
+        return a + b
     }
 
     fun exceeds(dims: Dims?, capPixels: Long = MAX_RENDER_PIXELS): Boolean {
@@ -161,10 +192,7 @@ class GenerationTracker {
     private val counter = AtomicLong(0L)
 
     fun next(): Long = counter.incrementAndGet()
-
     fun current(): Long = counter.get()
-
     fun isCurrent(generation: Long): Boolean = generation == counter.get()
-
     fun isStale(generation: Long): Boolean = generation != counter.get()
 }

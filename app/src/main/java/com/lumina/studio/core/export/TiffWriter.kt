@@ -5,17 +5,20 @@ object TiffWriter {
 
     fun estimateBytes(width: Int, height: Int): Long {
         if (width <= 0 || height <= 0) return 0L
-        return width.toLong() * height.toLong() * 3L + TIFF_FILE_OVERHEAD_BYTES
+        val pixels = saturatingMultiply(width.toLong(), height.toLong())
+        return saturatingAdd(saturatingMultiply(pixels, 3L), TIFF_FILE_OVERHEAD_BYTES)
     }
 
     fun encodeTiff(width: Int, height: Int, rgb: ByteArray): ByteArray {
         require(width > 0 && height > 0) { "Invalid TIFF dimensions: $width x $height" }
-        val pixelBytes = width.toLong() * height.toLong() * 3L
+        val pixels = saturatingMultiply(width.toLong(), height.toLong())
+        require(pixels <= (Int.MAX_VALUE - 1024L) / 3L) {
+            "Image too large for single-strip TIFF"
+        }
+        val pixelBytes = pixels * 3L
         require(rgb.size.toLong() == pixelBytes) {
             "RGB buffer size ${rgb.size} does not match $width x $height x 3"
         }
-        require(pixelBytes <= Int.MAX_VALUE - 1024) { "Image too large for single-strip TIFF" }
-
         val entryCount = 12
         val ifdSize = 2 + entryCount * 12 + 4
         val bitsOffset = 8 + ifdSize
@@ -61,7 +64,16 @@ object TiffWriter {
         u32(72L); u32(1L)
 
         rgb.copyInto(out, pixelOffset.toInt())
-
         return out
+    }
+
+    private fun saturatingMultiply(a: Long, b: Long): Long {
+        if (a <= 0L || b <= 0L) return 0L
+        return if (a > Long.MAX_VALUE / b) Long.MAX_VALUE else a * b
+    }
+
+    private fun saturatingAdd(a: Long, b: Long): Long {
+        if (a >= Long.MAX_VALUE - b) return Long.MAX_VALUE
+        return a + b
     }
 }

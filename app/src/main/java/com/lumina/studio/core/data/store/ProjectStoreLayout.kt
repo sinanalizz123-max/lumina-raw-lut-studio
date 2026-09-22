@@ -4,6 +4,7 @@ import java.util.Locale
 
 object ProjectStoreLayout {
     const val PROJECTS_DIR = "projects"
+    const val TRASH_DIR = ".trash"
     const val LUTS_DIR = "luts"
     const val ORIGINAL_DIR = "original"
     const val PREVIEWS_DIR = "previews"

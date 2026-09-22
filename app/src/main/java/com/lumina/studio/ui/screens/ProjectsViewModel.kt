@@ -149,6 +149,8 @@ class ProjectsViewModel(application: Application) : AndroidViewModel(application
     private var mergeJob: Job? = null
 
     private var lastDeleted: Project? = null
+    private var lastDeletedTrashToken: String? = null
+    private var lastDeleteJob: Job? = null
 
     val uiState: StateFlow<ProjectsUiState> = combine(
         database.projectDao().observeProjects(),
@@ -184,9 +186,10 @@ class ProjectsViewModel(application: Application) : AndroidViewModel(application
 
     init {
         viewModelScope.launch {
-            database.projectDao().observeProjects().collect { projects ->
-                val counts = projects.associate { project ->
-                    project.id to database.editHistoryDao().countForProject(project.id)
+            database.projectDao().observeProjects().collect {
+                val counts = withContext(Dispatchers.IO) {
+                    database.editHistoryDao().countAllByProject()
+                        .associate { it.projectId to it.count }
                 }
                 _editCounts.value = counts
             }
@@ -587,9 +590,23 @@ class ProjectsViewModel(application: Application) : AndroidViewModel(application
      */
     fun delete(project: Project) {
         lastDeleted = project
-        viewModelScope.launch(Dispatchers.IO) {
-            deleteProjectRow(project.id)
-            runCatching { ProjectStore.deleteOwnedFile(getApplication(), project.photoUri) }
+        lastDeletedTrashToken = ProjectStore.trashProjectFiles(
+            getApplication(),
+            project.id
+        )
+        if (lastDeletedTrashToken == null) {
+            lastDeleted = null
+            viewModelScope.launch(Dispatchers.IO) {
+                deleteProjectRow(project.id)
+                _notice.value = "Deleted photo; undo unavailable"
+            }
+            return
+        }
+        // Directory rename is metadata-only and completes before the snackbar
+        // can be tapped. The database deletion remains cancellable by Undo.
+        lastDeleteJob?.cancel()
+        lastDeleteJob = viewModelScope.launch(Dispatchers.IO) {
+            deleteProjectRow(project.id, deleteFiles = false)
         }
     }
 
@@ -616,20 +633,31 @@ class ProjectsViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
-    private suspend fun deleteProjectRow(projectId: String) {
+    private suspend fun deleteProjectRow(projectId: String, deleteFiles: Boolean = true) {
         val app = getApplication<Application>()
         database.projectDao().deleteById(projectId)
         runCatching { database.editHistoryDao().clearForProject(projectId) }
-        runCatching { ProjectStore.deleteProjectFiles(app, projectId) }
+        if (deleteFiles) runCatching { ProjectStore.deleteProjectFiles(app, projectId) }
         runCatching { albumRepository.removeProjectFromAll(projectId) }
         CullEngine.invalidate(projectId)
     }
 
     fun undoDelete(): Project? {
         val deleted = lastDeleted ?: return null
+        val token = lastDeletedTrashToken ?: return null
+        val deleteJob = lastDeleteJob
         lastDeleted = null
-        if (!ProjectStore.originalExists(deleted.photoUri)) return null
-        viewModelScope.launch {
+        lastDeletedTrashToken = null
+        lastDeleteJob = null
+        viewModelScope.launch(Dispatchers.IO) {
+            deleteJob?.cancel()
+            runCatching { deleteJob?.join() }
+            val app = getApplication<Application>()
+            val restored = ProjectStore.restoreTrashedProjectFiles(app, deleted.id, token)
+            if (!restored) {
+                _notice.value = "Could not restore deleted photo"
+                return@launch
+            }
             database.projectDao().upsert(deleted.copy(updatedAt = System.currentTimeMillis()))
         }
         return deleted

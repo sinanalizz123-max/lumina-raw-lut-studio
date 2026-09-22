@@ -26,9 +26,28 @@ interface ProjectDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(project: Project)
 
+    @Query("""
+        UPDATE projects
+        SET updatedAt = :updatedAt,
+            presetName = :presetName,
+            editParamsJson = :editParamsJson
+        WHERE id = :id
+    """)
+    suspend fun updateEditState(
+        id: String,
+        updatedAt: Long,
+        presetName: String?,
+        editParamsJson: String?
+    ): Int
+
     @Query("DELETE FROM projects WHERE id = :id")
     suspend fun deleteById(id: String)
 }
+
+data class EditHistoryCount(
+    val projectId: String,
+    val count: Int
+)
 
 @Dao
 interface EditHistoryDao {
@@ -37,6 +56,9 @@ interface EditHistoryDao {
 
     @Query("SELECT COUNT(*) FROM edit_history WHERE projectId = :projectId")
     fun observeCountForProject(projectId: String): Flow<Int>
+
+    @Query("SELECT projectId, COUNT(*) AS count FROM edit_history GROUP BY projectId")
+    suspend fun countAllByProject(): List<EditHistoryCount>
 
     @Query("SELECT COUNT(*) FROM edit_history WHERE projectId = :projectId")
     suspend fun countForProject(projectId: String): Int

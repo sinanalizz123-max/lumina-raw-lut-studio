@@ -315,6 +315,17 @@ fun ExportScreen(navController: NavController, projectId: String? = null) {
 
     fun startExport() {
         if (exporting) return
+        if (settings.format == ExportFormat.TIFF) {
+            val memoryError = Exporter.checkTiffBudget(
+                targetW,
+                targetH,
+                Runtime.getRuntime().maxMemory()
+            )
+            if (memoryError != null) {
+                error = memoryError
+                return
+            }
+        }
         error = null
         savedUri = null
         exporting = true
