@@ -235,6 +235,23 @@ object ProjectStore {
         }
     }
 
+    fun purgeTrash(context: Context, maxAgeMs: Long = 24L * 60L * 60L * 1000L): Int {
+        return try {
+            val root = File(context.filesDir, ProjectStoreLayout.TRASH_DIR)
+            if (!root.isDirectory) return 0
+            val cutoff = System.currentTimeMillis() - maxAgeMs.coerceAtLeast(0L)
+            var deleted = 0
+            root.listFiles()?.forEach { entry ->
+                if (entry.isDirectory && entry.lastModified() < cutoff && entry.deleteRecursively()) {
+                    deleted++
+                }
+            }
+            deleted
+        } catch (_: Exception) {
+            0
+        }
+    }
+
     fun deleteOwnedFile(context: Context, photoUri: String?): Boolean {
         if (photoUri.isNullOrBlank()) return false
         return try {
