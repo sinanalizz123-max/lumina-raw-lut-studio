@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.lumina.studio.core.ai.AiResearch
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 
@@ -29,6 +30,9 @@ class SettingsRepository(private val context: Context) {
         val HAPTIC_ENABLED = booleanPreferencesKey("haptic_enabled")
         val ANIMATIONS_ENABLED = booleanPreferencesKey("animations_enabled")
         val STORAGE_MIGRATED = booleanPreferencesKey("storage_migrated_v1")
+        // M12: selection backend id. Only "heuristic" exists (see AiResearch);
+        // the setter sanitizes unknown values back to it.
+        val AI_BACKEND = stringPreferencesKey("ai_backend")
     }
 
     val theme: Flow<String> = context.settingsStore.data
@@ -75,6 +79,9 @@ class SettingsRepository(private val context: Context) {
 
     val storageMigrated: Flow<Boolean> = context.settingsStore.data
         .map { prefs -> prefs[Keys.STORAGE_MIGRATED] ?: false }
+
+    val aiBackend: Flow<String> = context.settingsStore.data
+        .map { prefs -> prefs[Keys.AI_BACKEND] ?: AiResearch.SELECTED_BACKEND }
 
     suspend fun setTheme(value: String) {
         context.settingsStore.edit { prefs -> prefs[Keys.THEME] = value }
@@ -134,5 +141,10 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun setStorageMigrated(done: Boolean) {
         context.settingsStore.edit { prefs -> prefs[Keys.STORAGE_MIGRATED] = done }
+    }
+
+    suspend fun setAiBackend(value: String) {
+        val v = if (value == AiResearch.SELECTED_BACKEND) value else AiResearch.SELECTED_BACKEND
+        context.settingsStore.edit { prefs -> prefs[Keys.AI_BACKEND] = v }
     }
 }

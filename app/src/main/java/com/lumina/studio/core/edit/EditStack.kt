@@ -514,12 +514,19 @@ enum class MaskTool(val label: String) {
     LINEAR("Linear"),
     RADIAL("Radial"),
     COLOR("Color range"),
-    LUMINANCE("Luma range");
+    LUMINANCE("Luma range"),
+    // M12 heuristic select (§§24-25): alpha comes from the cached
+    // AiMaskFieldStore field keyed by EditMask.cacheKey (see core.ai).
+    // Labels stay ML-free on purpose ("heuristic", never "AI" in UI).
+    AI_SUBJECT("Subject"),
+    AI_SKY("Sky");
 
     companion object {
         fun fromKey(key: String?): MaskTool =
             entries.firstOrNull { it.name == key } ?: BRUSH
     }
+
+    fun isAi(): Boolean = this == AI_SUBJECT || this == AI_SKY
 }
 
 /**
@@ -574,13 +581,20 @@ data class EditMask(
     // Luminance-range selection (MaskTool.LUMINANCE): smooth band.
     val lumaLo: Float = 0f,
     val lumaHi: Float = 1f,
-    val lumaFeather: Float = 0.2f
+    val lumaFeather: Float = 0.2f,
+    // M12 heuristic select: key into the cached alpha field
+    // (AiMaskCache file in files/<id>/metadata/ + AiMaskFieldStore memory).
+    // The recipe stores ONLY this key (plus feather/opacity/invert/op) —
+    // never the bitmap. Null for every manual tool and for old JSON.
+    val cacheKey: String? = null
 ) {
     companion object {
         const val MIN_SIZE_PX = 1f
         const val MAX_SIZE_PX = 500f
         const val MAX_POINTS = 64
         const val MAX_BLUR = 50f
+        // M12: cacheKey cap (mirrors AiMaskCache.cacheFile sanitization).
+        const val MAX_CACHE_KEY_LEN = 96
 
         fun sanitizePoints(points: List<MaskPoint>?): List<MaskPoint> {
             if (points.isNullOrEmpty()) return emptyList()
@@ -693,6 +707,13 @@ data class EditMask(
     }
 
     fun isRangeTool(): Boolean = tool == MaskTool.COLOR || tool == MaskTool.LUMINANCE
+
+    fun isAiTool(): Boolean = tool.isAi()
+
+    fun withCacheKey(v: String?): EditMask {
+        val capped = v?.takeIf { it.isNotBlank() }?.take(MAX_CACHE_KEY_LEN)
+        return if (cacheKey == capped) this else copy(cacheKey = capped)
+    }
 
     fun hasLocalGrade(): Boolean =
         exposure != 0f || temperature != 0f || saturation != 0f || clarity != 0f
@@ -1326,6 +1347,25 @@ data class EditParams(
         return copy(masks = masks + base)
     }
 
+    /**
+     * M12: append a heuristic-select mask whose alpha resolves from
+     * [cacheKey] at render time. Fully undoable/persistent like manual
+     * masks; manual refine = add a brush Subtract mask on top (existing ops).
+     */
+    fun addAiMask(tool: MaskTool, cacheKey: String): EditParams {
+        if (masks.size >= MAX_MASKS) return this
+        if (!tool.isAi()) return addMask(tool)
+        if (cacheKey.isBlank()) return this
+        val id = java.util.UUID.randomUUID().toString()
+        val base = EditMask(
+            id = id,
+            tool = tool,
+            exposure = 1f,
+            cacheKey = cacheKey.take(EditMask.MAX_CACHE_KEY_LEN)
+        )
+        return copy(masks = masks + base)
+    }
+
     fun removeMask(id: String): EditParams {
         if (masks.none { it.id == id }) return this
         return copy(masks = masks.filterNot { it.id == id })
@@ -1506,6 +1546,10 @@ object EditParamsJson {
             sb.append(",\"lumaLo\":").append(mask.lumaLo)
             sb.append(",\"lumaHi\":").append(mask.lumaHi)
             sb.append(",\"lumaFeather\":").append(mask.lumaFeather)
+            // M12 key only (missing = pre-M12 JSON default null).
+            sb.append(",\"cacheKey\":")
+            if (mask.cacheKey == null) sb.append("null")
+            else sb.append("\"").append(escape(mask.cacheKey)).append("\"")
             sb.append(",\"points\":[")
             mask.points.forEachIndexed { pi, p ->
                 if (pi > 0) sb.append(",")
@@ -1815,6 +1859,9 @@ object EditParamsJson {
         val lumaLo = extractNumber(obj, "lumaLo")?.coerceIn(0f, 1f) ?: 0f
         val lumaHi = extractNumber(obj, "lumaHi")?.coerceIn(0f, 1f) ?: 1f
         val lumaFeather = extractNumber(obj, "lumaFeather")?.coerceIn(0f, 1f) ?: 0.2f
+        // M12 key only (missing = pre-M12 JSON default null).
+        val cacheKey = extractStringOrNull(obj, "cacheKey")
+            ?.takeIf { it.isNotBlank() }?.take(EditMask.MAX_CACHE_KEY_LEN)
         val points = extractMaskPoints(obj) ?: emptyList()
         return EditMask(
             id = id,
@@ -1841,7 +1888,8 @@ object EditParamsJson {
             sampledRgb = sampledRgb,
             lumaLo = lumaLo,
             lumaHi = lumaHi,
-            lumaFeather = lumaFeather
+            lumaFeather = lumaFeather,
+            cacheKey = cacheKey
         )
     }
 

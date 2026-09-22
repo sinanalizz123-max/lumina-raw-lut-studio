@@ -16,6 +16,14 @@ import com.lumina.studio.core.data.datastore.SettingsRepository
 import com.lumina.studio.core.data.local.DatabaseProvider
 import com.lumina.studio.core.data.local.EditHistoryLog
 import com.lumina.studio.core.data.local.Project
+import com.lumina.studio.core.ai.AiBitmaps
+import com.lumina.studio.core.ai.AiMaskCache
+import com.lumina.studio.core.ai.AiMaskFieldStore
+import com.lumina.studio.core.ai.AiProcessor
+import com.lumina.studio.core.ai.AiSelectMessages
+import com.lumina.studio.core.ai.AiSelectOutcome
+import com.lumina.studio.core.ai.HeuristicAiProcessor
+import com.lumina.studio.core.data.store.ProjectStore
 import com.lumina.studio.core.edit.AdjustControl
 import com.lumina.studio.core.edit.AutoLevels
 import com.lumina.studio.core.edit.CropRatio
@@ -74,6 +82,12 @@ data class ZoomTile(
     val bottom: Float,
     val revision: Long
 )
+
+/** M12: computed-field result vs. honest outcome for the selection flow. */
+private sealed interface AiBuild {
+    data class Ready(val cacheKey: String) : AiBuild
+    data class Outcome(val outcome: AiSelectOutcome) : AiBuild
+}
 
 class EditorViewModel(application: Application, private val projectId: String?) : AndroidViewModel(application) {
     private val database = DatabaseProvider.get(application)
@@ -159,6 +173,14 @@ class EditorViewModel(application: Application, private val projectId: String?) 
     private val _maskSampleArmedId = MutableStateFlow<String?>(null)
     val maskSampleArmedId: StateFlow<String?> = _maskSampleArmedId.asStateFlow()
 
+    // M12 heuristic select (§§24-25): kind label ("subject"/"sky") while a
+    // selection job runs, else null; transient honest result/failure message.
+    private val _aiWorkingKind = MutableStateFlow<String?>(null)
+    val aiWorkingKind: StateFlow<String?> = _aiWorkingKind.asStateFlow()
+
+    private val _aiMessage = MutableStateFlow<String?>(null)
+    val aiMessage: StateFlow<String?> = _aiMessage.asStateFlow()
+
     // M8 retouch (§26): per-op spots + placement/source arms. Drag moves
     // coalesce like curves (beginRetouchDrag pushes one undo, live moves skip
     // the push); discrete edits push per op.
@@ -215,6 +237,10 @@ class EditorViewModel(application: Application, private val projectId: String?) 
     private val redoStack = ArrayDeque<EditParams>()
     private var baseBitmap: Bitmap? = null
     private var persistJob: Job? = null
+    // M12: cancellable heuristic-selection job + swappable backend
+    // (tests/future vetted backends; default is the honest heuristic).
+    private var aiJob: Job? = null
+    var aiProcessor: AiProcessor = HeuristicAiProcessor
     private val pendingHistoryTags = LinkedHashSet<String>()
     private var renderJob: Job? = null
     private var histogramJob: Job? = null
@@ -300,6 +326,9 @@ class EditorViewModel(application: Application, private val projectId: String?) 
                 _params.value = loaded?.toEditParams() ?: EditParams.DEFAULT
                 _selectedMaskId.value = _params.value.masks.lastOrNull()?.id
                 _selectedRetouchId.value = _params.value.retouch.lastOrNull()?.id
+                // M12: prime cached heuristic fields into memory so reopen and
+                // export reuse them with no recompute.
+                primeAiFields(_params.value)
                 undoStack.clear()
                 redoStack.clear()
                 syncUndoRedo()
@@ -1229,6 +1258,169 @@ class EditorViewModel(application: Application, private val projectId: String?) 
         syncUndoRedo()
         renderPreview()
         schedulePersist()
+    }
+
+    /**
+     * M12 heuristic select (§§24-25): "Select subject"/"Select sky" flow.
+     * Compute (or disk-cache hit) runs on Default and is cancellable via
+     * [cancelAiSelect]; the mask-row append stays on the Main scope like
+     * every other mutator, so undo/persist ordering is unchanged. A second
+     * tap for the same source reuses the existing row (no duplicate masks,
+     * no recompute). Failures surface the honest [AiSelectOutcome] message
+     * plus the manual-mask fallback — never a silent empty mask.
+     */
+    fun selectAiSubject() = requestAiMask(MaskTool.AI_SUBJECT)
+
+    fun selectAiSky() = requestAiMask(MaskTool.AI_SKY)
+
+    fun consumeAiMessage() {
+        _aiMessage.value = null
+    }
+
+    fun cancelAiSelect() {
+        aiJob?.cancel()
+        aiJob = null
+        _aiWorkingKind.value = null
+    }
+
+    fun requestAiMask(tool: MaskTool) {
+        if (tool != MaskTool.AI_SUBJECT && tool != MaskTool.AI_SKY) return
+        if (aiJob?.isActive == true) return
+        val projectIdValue = projectId
+        if (projectIdValue.isNullOrBlank()) {
+            _aiMessage.value = AiSelectOutcome.Failed("no project open").userMessage()
+            return
+        }
+        if (_params.value.masks.size >= EditParams.MAX_MASKS) {
+            _aiMessage.value = AiSelectOutcome.Failed(
+                "mask limit reached (${EditParams.MAX_MASKS}) — delete a mask first"
+            ).userMessage()
+            return
+        }
+        val kindLabel = if (tool == MaskTool.AI_SKY) AiMaskCache.KIND_SKY else AiMaskCache.KIND_SUBJECT
+        aiJob?.cancel()
+        aiJob = viewModelScope.launch {
+            _aiWorkingKind.value = kindLabel
+            _aiMessage.value = null
+            try {
+                val built = withContext(Dispatchers.Default) {
+                    buildAiField(projectIdValue, tool, kindLabel)
+                }
+                when (built) {
+                    is AiBuild.Ready -> {
+                        val current = _params.value
+                        if (current.masks.size >= EditParams.MAX_MASKS) {
+                            _aiMessage.value = AiSelectOutcome.Failed(
+                                "mask limit reached (${EditParams.MAX_MASKS}) — delete a mask first"
+                            ).userMessage()
+                        } else {
+                            val reuse = current.masks.firstOrNull {
+                                it.tool == tool && it.cacheKey == built.cacheKey
+                            }
+                            if (reuse != null) {
+                                _selectedMaskId.value = reuse.id
+                                _aiMessage.value = "Already added — reused the cached selection."
+                            } else {
+                                pushUndo(current)
+                                redoStack.clear()
+                                val next = current.addAiMask(tool, built.cacheKey)
+                                _params.value = next
+                                _selectedMaskId.value = next.masks.lastOrNull()?.id
+                                syncUndoRedo()
+                                renderPreview()
+                                schedulePersist()
+                                _aiMessage.value =
+                                    AiSelectOutcome.Ready(built.cacheKey).userMessage()
+                            }
+                        }
+                    }
+                    is AiBuild.Outcome -> _aiMessage.value = built.outcome.userMessage()
+                }
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                _aiMessage.value = AiSelectOutcome.Failed("unexpected error").userMessage()
+            } finally {
+                _aiWorkingKind.value = null
+            }
+        }
+    }
+
+    private suspend fun buildAiField(
+        projectIdValue: String,
+        tool: MaskTool,
+        kindLabel: String
+    ): AiBuild {
+        val photoUri = _project.value?.photoUri
+        val analysis = _preview.value ?: baseBitmap
+        if (photoUri.isNullOrBlank() || analysis == null ||
+            runCatching { analysis.isRecycled }.getOrDefault(true)
+        ) {
+            return AiBuild.Outcome(AiSelectOutcome.Failed("no image loaded"))
+        }
+        val metadataDir = try {
+            ProjectStore.pathsFor(getApplication(), projectIdValue).metadataDir
+        } catch (_: Exception) {
+            return AiBuild.Outcome(AiSelectOutcome.Failed("project storage unavailable"))
+        }
+        val srcFile = runCatching { File(photoUri) }.getOrNull()
+        val length = if (srcFile != null && srcFile.isFile) srcFile.length() else -1L
+        val lastModified = if (srcFile != null && srcFile.isFile) srcFile.lastModified() else -1L
+        val hash = AiMaskCache.sourceHash(photoUri, length, lastModified)
+        val scaled = AiBitmaps.analysisBitmap(analysis)
+            ?: return AiBuild.Outcome(AiSelectOutcome.Failed("could not read preview"))
+        try {
+            val w = scaled.width
+            val h = scaled.height
+            if (w <= 0 || h <= 0) {
+                return AiBuild.Outcome(AiSelectOutcome.Failed("could not read preview"))
+            }
+            val cacheKey = AiMaskCache.cacheKey(kindLabel, hash, w, h)
+            if (AiMaskFieldStore.get(cacheKey) != null) return AiBuild.Ready(cacheKey)
+            AiMaskCache.load(AiMaskCache.cacheFile(metadataDir, cacheKey))?.let {
+                AiMaskFieldStore.put(cacheKey, it.mask, it.width, it.height)
+                return AiBuild.Ready(cacheKey)
+            }
+            val argb = AiBitmaps.argbOf(scaled)
+                ?: return AiBuild.Outcome(AiSelectOutcome.Failed("could not read preview"))
+            currentCoroutineContext().ensureActive()
+            val field = if (tool == MaskTool.AI_SKY) aiProcessor.skyMask(argb, w, h)
+            else aiProcessor.subjectMask(argb, w, h)
+            val mapped = AiSelectMessages.fromProcessorResult(field, cacheKey, kindLabel)
+            if (mapped !is AiSelectOutcome.Ready || field == null) {
+                return AiBuild.Outcome(mapped)
+            }
+            AiMaskFieldStore.put(cacheKey, field, w, h)
+            // Disk-cache failure is non-fatal: the in-memory field still
+            // serves this session; next open recomputes.
+            AiMaskCache.save(AiMaskCache.cacheFile(metadataDir, cacheKey), field, w, h)
+            return AiBuild.Ready(cacheKey)
+        } finally {
+            try {
+                if (scaled !== analysis && !scaled.isRecycled) scaled.recycle()
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    private fun primeAiFields(params: EditParams) {
+        val id = projectId
+        val aiMasks = params.masks.filter { it.isAiTool() && !it.cacheKey.isNullOrBlank() }
+        if (id.isNullOrBlank() || aiMasks.isEmpty()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val metadataDir = ProjectStore.pathsFor(getApplication(), id).metadataDir
+                for (mask in aiMasks) {
+                    val key = mask.cacheKey ?: continue
+                    if (AiMaskFieldStore.get(key) != null) continue
+                    ensureActive()
+                    AiMaskCache.load(AiMaskCache.cacheFile(metadataDir, key))?.let {
+                        AiMaskFieldStore.put(key, it.mask, it.width, it.height)
+                    }
+                }
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+            }
+        }
     }
 
     fun setPerspectiveV(value: Float) {

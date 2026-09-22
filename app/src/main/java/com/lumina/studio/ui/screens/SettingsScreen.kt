@@ -38,6 +38,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavController
 import com.lumina.studio.core.design.components.CategoryChip
+import com.lumina.studio.core.ai.AiResearch
 import com.lumina.studio.core.design.theme.LuminaCaptionTextStyle
 import com.lumina.studio.core.design.theme.LuminaMuted
 import com.lumina.studio.core.design.theme.LuminaOnSurface
@@ -60,6 +61,7 @@ fun SettingsScreen(navController: NavController, settingsViewModel: SettingsView
     val includeMetadata by settingsViewModel.exportIncludeMetadata.collectAsState()
     val includeLocation by settingsViewModel.exportIncludeLocation.collectAsState()
     val libraryPath by settingsViewModel.presetLibraryPath.collectAsState()
+    val aiBackend by settingsViewModel.aiBackend.collectAsState()
     val cacheSize by settingsViewModel.cacheSize.collectAsState()
     val cacheMessage by settingsViewModel.cacheMessage.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
@@ -135,6 +137,30 @@ fun SettingsScreen(navController: NavController, settingsViewModel: SettingsView
                 Text(
                     "Clearing the cache only removes temporary files. " +
                         "Originals are never deleted.",
+                    style = LuminaCaptionTextStyle,
+                    color = LuminaMuted
+                )
+            }
+
+            // M12: selection backend status. Copy says "heuristic", never "AI".
+            SettingsSection(title = "Selection") {
+                Text(
+                    "Backend: ${AiResearch.BACKEND_NAME} ($aiBackend)",
+                    style = LuminaSectionHeaderTextStyle,
+                    color = LuminaOnSurface
+                )
+                Text(
+                    "Status: ${AiResearch.BACKEND_STATUS}",
+                    style = LuminaCaptionTextStyle,
+                    color = LuminaMuted
+                )
+                Text(
+                    "Model size: ${AiResearch.MODEL_SIZE_NOTE}",
+                    style = LuminaCaptionTextStyle,
+                    color = LuminaMuted
+                )
+                Text(
+                    AiResearch.OFFLINE_NOTE,
                     style = LuminaCaptionTextStyle,
                     color = LuminaMuted
                 )

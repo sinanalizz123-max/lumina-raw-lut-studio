@@ -706,7 +706,13 @@ fun MaskToolPanel(
     onLumaHi: (String, Float) -> Unit = { _, _ -> },
     onLumaFeather: (String, Float) -> Unit = { _, _ -> },
     maskSampleArmedId: String? = null,
-    onArmSample: (String?) -> Unit = {}
+    onArmSample: (String?) -> Unit = {},
+    aiWorkingKind: String? = null,
+    aiMessage: String? = null,
+    onSelectSubject: () -> Unit = {},
+    onSelectSky: () -> Unit = {},
+    onCancelAi: () -> Unit = {},
+    onDismissAiMessage: () -> Unit = {}
 ) {
     MaskPanel(
         params = params,
@@ -739,6 +745,12 @@ fun MaskToolPanel(
         onLumaHi = onLumaHi,
         onLumaFeather = onLumaFeather,
         maskSampleArmedId = maskSampleArmedId,
-        onArmSample = onArmSample
+        onArmSample = onArmSample,
+        aiWorkingKind = aiWorkingKind,
+        aiMessage = aiMessage,
+        onSelectSubject = onSelectSubject,
+        onSelectSky = onSelectSky,
+        onCancelAi = onCancelAi,
+        onDismissAiMessage = onDismissAiMessage
     )
 }

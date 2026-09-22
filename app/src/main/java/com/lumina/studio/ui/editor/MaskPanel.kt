@@ -12,15 +12,18 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Brush
+import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.Contrast
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Gradient
 import androidx.compose.material.icons.filled.Palette
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.RadioButtonChecked
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -54,6 +57,8 @@ private fun maskTypeIcon(tool: MaskTool): ImageVector = when (tool) {
     MaskTool.RADIAL -> Icons.Filled.RadioButtonChecked
     MaskTool.COLOR -> Icons.Filled.Palette
     MaskTool.LUMINANCE -> Icons.Filled.Contrast
+    MaskTool.AI_SUBJECT -> Icons.Filled.Person
+    MaskTool.AI_SKY -> Icons.Filled.Cloud
 }
 
 @Composable
@@ -88,7 +93,15 @@ fun MaskPanel(
     onLumaHi: (String, Float) -> Unit = { _, _ -> },
     onLumaFeather: (String, Float) -> Unit = { _, _ -> },
     maskSampleArmedId: String? = null,
-    onArmSample: (String?) -> Unit = {}
+    onArmSample: (String?) -> Unit = {},
+    // M12 heuristic select: working kind label ("subject"/"sky") or null,
+    // plus the transient honest result/failure message.
+    aiWorkingKind: String? = null,
+    aiMessage: String? = null,
+    onSelectSubject: () -> Unit = {},
+    onSelectSky: () -> Unit = {},
+    onCancelAi: () -> Unit = {},
+    onDismissAiMessage: () -> Unit = {}
 ) {
     val selected = params.masks.firstOrNull { it.id == selectedMaskId } ?: params.masks.lastOrNull()
     val maskCardShape = RoundedCornerShape(16.dp)
@@ -111,7 +124,9 @@ fun MaskPanel(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            MaskTool.entries.forEach { tool ->
+            // M12: heuristic tools have dedicated select buttons below (they
+            // need a cached field, not an empty row), so chips stay manual.
+            MaskTool.entries.filter { !it.isAi() }.forEach { tool ->
                 val canAdd = params.masks.size < EditParams.MAX_MASKS
                 CategoryChip(
                     label = tool.label,
@@ -139,6 +154,66 @@ fun MaskPanel(
             style = LuminaCaptionTextStyle,
             color = LuminaMuted
         )
+        // M12 heuristic select: result becomes a mask row (cached per
+        // project, reused on reopen). Copy says "heuristic", never "AI".
+        Text(
+            text = "Heuristic select (not AI) — runs offline on this device. " +
+                "The result becomes a mask row you can refine.",
+            style = LuminaCaptionTextStyle,
+            color = LuminaMuted
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            TextButton(
+                onClick = onSelectSubject,
+                enabled = aiWorkingKind == null,
+                modifier = Modifier.heightIn(min = 48.dp)
+            ) { Text("Select subject") }
+            TextButton(
+                onClick = onSelectSky,
+                enabled = aiWorkingKind == null,
+                modifier = Modifier.heightIn(min = 48.dp)
+            ) { Text("Select sky") }
+        }
+        if (aiWorkingKind != null) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                CircularProgressIndicator()
+                Text(
+                    text = "Selecting $aiWorkingKind…",
+                    modifier = Modifier.weight(1f),
+                    style = LuminaCaptionTextStyle,
+                    color = LuminaMuted
+                )
+                TextButton(
+                    onClick = onCancelAi,
+                    modifier = Modifier.heightIn(min = 48.dp)
+                ) { Text("Cancel") }
+            }
+        }
+        if (aiMessage != null) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = aiMessage,
+                    modifier = Modifier.weight(1f),
+                    style = LuminaCaptionTextStyle,
+                    color = LuminaMuted
+                )
+                TextButton(
+                    onClick = onDismissAiMessage,
+                    modifier = Modifier.heightIn(min = 48.dp)
+                ) { Text("Dismiss") }
+            }
+        }
         if (params.masks.isEmpty()) {
             Text(
                 text = "No masks yet. Add a Brush, Linear, Radial, Color-range or Luma-range mask to grade locally.",
@@ -178,7 +253,7 @@ fun MaskPanel(
                                 .padding(horizontal = 8.dp)
                         ) {
                             Text(
-                                text = "${mask.tool.label} • ${mask.op.label} • ${(mask.opacity * 100f).roundToInt()}% • ${if (mask.visible) "visible" else "hidden"}",
+                                text = "${mask.tool.label}${if (mask.isAiTool()) " (heuristic)" else ""} • ${mask.op.label} • ${(mask.opacity * 100f).roundToInt()}% • ${if (mask.visible) "visible" else "hidden"}",
                                 style = LuminaSectionHeaderTextStyle,
                                 color = LuminaOnSurface
                             )
@@ -380,6 +455,28 @@ fun MaskPanel(
                         valueRange = 0f..100f,
                         displayValue = "${(mask.lumaFeather * 100f).roundToInt()}%"
                     )
+                }
+                MaskTool.AI_SUBJECT, MaskTool.AI_SKY -> {
+                    // Heuristic rows have no geometry: feather/opacity/invert
+                    // plus the local grades below do the refining. Manual
+                    // refine = add a Brush Subtract mask on top (existing ops).
+                    Text(
+                        text = if (mask.tool == MaskTool.AI_SUBJECT)
+                            "Heuristic subject guess (central and colorful, not AI). " +
+                                "Refine with Feather/Opacity, or add a Brush Subtract mask on top."
+                        else
+                            "Heuristic sky guess (blue and bright, not AI). " +
+                                "Refine with Feather/Opacity, or add a Brush Subtract mask on top.",
+                        style = LuminaCaptionTextStyle,
+                        color = LuminaMuted
+                    )
+                    if (mask.cacheKey == null) {
+                        Text(
+                            text = "No cached selection — delete this row and select again.",
+                            style = LuminaCaptionTextStyle,
+                            color = LuminaMuted
+                        )
+                    }
                 }
             }
             ProSlider(

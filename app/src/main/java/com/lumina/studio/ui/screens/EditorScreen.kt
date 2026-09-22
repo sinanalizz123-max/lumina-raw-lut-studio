@@ -168,6 +168,8 @@ fun EditorScreen(navController: NavController, projectId: String? = null) {
     val selectedMaskId by vm.selectedMaskId.collectAsState()
     val showMaskOverlay by vm.showMaskOverlay.collectAsState()
     val maskSampleArmedId by vm.maskSampleArmedId.collectAsState()
+    val aiWorkingKind by vm.aiWorkingKind.collectAsState()
+    val aiMessage by vm.aiMessage.collectAsState()
     val selectedRetouchId by vm.selectedRetouchId.collectAsState()
     val retouchMode by vm.retouchMode.collectAsState()
     val retouchPlaceArmed by vm.retouchPlaceArmed.collectAsState()
@@ -1275,7 +1277,13 @@ fun EditorScreen(navController: NavController, projectId: String? = null) {
                             onLumaHi = { id, v -> vm.setMaskLumaHi(id, v) },
                             onLumaFeather = { id, v -> vm.setMaskLumaFeather(id, v) },
                             maskSampleArmedId = maskSampleArmedId,
-                            onArmSample = { vm.armMaskSample(it) }
+                            onArmSample = { vm.armMaskSample(it) },
+                            aiWorkingKind = aiWorkingKind,
+                            aiMessage = aiMessage,
+                            onSelectSubject = { vm.selectAiSubject() },
+                            onSelectSky = { vm.selectAiSky() },
+                            onCancelAi = { vm.cancelAiSelect() },
+                            onDismissAiMessage = { vm.consumeAiMessage() }
                         )
                     } else if (tool == EditorTool.RETOUCH) {
                         RetouchToolPanel(
@@ -2028,6 +2036,17 @@ private fun MaskOverlay(
                 com.lumina.studio.core.edit.MaskTool.COLOR, com.lumina.studio.core.edit.MaskTool.LUMINANCE -> {
                     // Range masks select by color/luma across the frame: show a
                     // full-frame tint (per-pixel weights are not drawn here).
+                    drawRect(red, topLeft = Offset(left, top), size = androidx.compose.ui.geometry.Size(drawnW, drawnH))
+                    drawRect(
+                        redEdge,
+                        topLeft = Offset(left, top),
+                        size = androidx.compose.ui.geometry.Size(drawnW, drawnH),
+                        style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2f)
+                    )
+                }
+                com.lumina.studio.core.edit.MaskTool.AI_SUBJECT, com.lumina.studio.core.edit.MaskTool.AI_SKY -> {
+                    // Heuristic fields are per-pixel like range masks: same
+                    // full-frame tint treatment (weights are not drawn here).
                     drawRect(red, topLeft = Offset(left, top), size = androidx.compose.ui.geometry.Size(drawnW, drawnH))
                     drawRect(
                         redEdge,

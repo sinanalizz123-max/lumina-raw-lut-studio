@@ -29,6 +29,7 @@ import com.lumina.studio.core.edit.OpticsMath
 import com.lumina.studio.core.edit.OpticsParams
 import com.lumina.studio.core.edit.PointColorMath
 import com.lumina.studio.core.edit.StepKey
+import com.lumina.studio.core.ai.AiMaskFieldStore
 import com.lumina.studio.core.lut.LutCube
 import com.lumina.studio.core.lut.LutRenderer
 import com.lumina.studio.core.util.ImageOrientation
@@ -1446,6 +1447,21 @@ object PreviewRenderer {
             MaskTool.RADIAL -> fillRadialAlpha(out, w, h, mask, opacity, inverted)
             MaskTool.LINEAR -> fillLinearAlpha(out, w, h, mask, opacity, inverted)
             MaskTool.BRUSH, MaskTool.ERASER -> fillStrokeAlpha(out, w, h, mask, opacity, inverted)
+            // M12 heuristic select: alpha resolves from the cached analysis
+            // field (primed from files/<id>/metadata/ on project open, so
+            // preview and export share it). Missing field = honest no-op
+            // (zeros); the same feather/blur/opacity/invert/op path below
+            // applies, so local exposure/color/grade/blur grades integrate
+            // with zero extra render code.
+            MaskTool.AI_SUBJECT, MaskTool.AI_SKY -> {
+                val field = AiMaskFieldStore.resampledAlpha(mask.cacheKey, w, h)
+                if (field != null && field.size == total) {
+                    for (i in 0 until total) {
+                        val weight = field[i].coerceIn(0f, 1f)
+                        out[i] = (if (inverted) 1f - weight else weight) * opacity
+                    }
+                }
+            }
         }
         return out
     }

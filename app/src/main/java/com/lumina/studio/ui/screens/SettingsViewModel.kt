@@ -3,6 +3,7 @@ package com.lumina.studio.ui.screens
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.lumina.studio.core.ai.AiResearch
 import com.lumina.studio.core.data.cache.CacheFileManager
 import com.lumina.studio.core.data.datastore.SettingsRepository
 import com.lumina.studio.core.data.store.ProjectStore
@@ -33,6 +34,8 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     val presetLibraryPath = repository.presetLibraryPath.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), "")
     val hapticEnabled = repository.hapticEnabled.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
     val animationsEnabled = repository.animationsEnabled.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), true)
+    // M12: selection backend id (only "heuristic" exists; see AiResearch).
+    val aiBackend = repository.aiBackend.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), AiResearch.SELECTED_BACKEND)
 
     private val _cacheSize = MutableStateFlow(cacheManager.cacheSizeDisplay())
     val cacheSize: StateFlow<String> = _cacheSize.asStateFlow()
@@ -79,6 +82,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     fun setPresetLibraryPath(value: String) = launch { repository.setPresetLibraryPath(value) }
     fun setHapticEnabled(value: Boolean) = launch { repository.setHapticEnabled(value) }
     fun setAnimationsEnabled(value: Boolean) = launch { repository.setAnimationsEnabled(value) }
+    fun setAiBackend(value: String) = launch { repository.setAiBackend(value) }
 
     private fun launch(block: suspend () -> Unit) {
         viewModelScope.launch { block() }
