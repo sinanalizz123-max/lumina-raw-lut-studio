@@ -73,14 +73,11 @@ object SyntheticDng {
             (if (colorMatrix1 != null) 1 else 0)
         val ifdSize = 2 + baseFieldCount * 12 + 4
         var dataOff = (8 + ifdSize).toLong()
-        val cfaDimBlob = u16(cfaDim.first, little) + u16(cfaDim.second, little)
-        extraBlobs.add(cfaDimBlob)
-        val cfaDimOff = dataOff
-        dataOff += cfaDimBlob.size
-        val blackDimBlob = u16(1, little) + u16(1, little)
-        extraBlobs.add(blackDimBlob)
-        val blackDimOff = dataOff
-        dataOff += blackDimBlob.size
+        // NOTE: SHORT×2 (CFAPatternDim, BlackLevelRepeatDim) occupies exactly
+        // 4 bytes and MUST be inline per TIFF (total <= 4 → value field, not
+        // an offset). An offset here would be misread as huge dimensions.
+        val cfaDimInline = u16(cfaDim.first, little) + u16(cfaDim.second, little)
+        val blackDimInline = u16(1, little) + u16(1, little)
         val patBlob = ByteArray(cfaPattern.size) { cfaPattern[it].toByte() }
         extraBlobs.add(patBlob)
         val patOff = dataOff
@@ -140,7 +137,7 @@ object SyntheticDng {
         finalFields.add(entry(279, 4, 1, u32(stripCount, little)))
         finalFields.add(entry(274, 3, 1, u16(orientation, little)))
         finalFields.add(entry(284, 3, 1, u16(1, little)))
-        finalFields.add(Field(33421, 3, 2, u32(cfaDimOff, little)))
+        finalFields.add(Field(33421, 3, 2, cfaDimInline))
         if (cfaPattern.size <= 4) {
             val inline = ByteArray(4)
             for (i in cfaPattern.indices) inline[i] = cfaPattern[i].toByte()
@@ -148,7 +145,7 @@ object SyntheticDng {
         } else {
             finalFields.add(Field(33422, 1, cfaPattern.size.toLong(), u32(patOff, little)))
         }
-        finalFields.add(Field(50713, 3, 2, u32(blackDimOff, little)))
+        finalFields.add(Field(50713, 3, 2, blackDimInline))
         finalFields.add(Field(50714, 3, 1, u16(black.toInt(), little)))
         finalFields.add(Field(50717, 3, 1, u16(white.toInt(), little)))
         if (asShotNeutral != null) {

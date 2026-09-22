@@ -42,9 +42,11 @@ class M8RetouchBlurDustTest {
         val targetLum = RetouchMath.luma(tR, tG, tB)
         assertEquals(targetLum, RetouchMath.luma(out[0], out[1], out[2]), 1e-5f)
         // Detail is preserved: shifting the target shifts the output equally.
-        val out2 = RetouchMath.healPixel(tR + 0.1f, tG, tB, 0.8f, 0.2f, 0.2f)
-        assertEquals(0.1f, out2[0] - out[0], 1e-5f)
-        assertEquals(out[1], out2[1], 1e-5f)
+        // (Shift blue DOWN: shifting red up would clip at 1.0 and the
+        // coerceIn clip is correct render behavior, not a math bug.)
+        val out2 = RetouchMath.healPixel(tR, tG, tB - 0.1f, 0.8f, 0.2f, 0.2f)
+        assertEquals(-0.1f, out2[2] - out[2], 1e-5f)
+        assertEquals(out[0], out2[0], 1e-5f)
     }
 
     @Test
