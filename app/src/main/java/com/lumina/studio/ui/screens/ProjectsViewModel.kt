@@ -184,9 +184,10 @@ class ProjectsViewModel(application: Application) : AndroidViewModel(application
 
     init {
         viewModelScope.launch {
-            database.projectDao().observeProjects().collect { projects ->
-                val counts = projects.associate { project ->
-                    project.id to database.editHistoryDao().countForProject(project.id)
+            database.projectDao().observeProjects().collect {
+                val counts = withContext(Dispatchers.IO) {
+                    database.editHistoryDao().countAllByProject()
+                        .associate { it.projectId to it.count }
                 }
                 _editCounts.value = counts
             }
