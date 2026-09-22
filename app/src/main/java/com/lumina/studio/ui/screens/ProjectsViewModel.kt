@@ -27,8 +27,15 @@ import com.lumina.studio.core.library.PresetFilter
 import com.lumina.studio.core.library.RecencyFilter
 import com.lumina.studio.core.library.TypeFilter
 import com.lumina.studio.core.lut.LutRegistry
+import com.lumina.studio.core.merge.AndroidHdrMerger
+import com.lumina.studio.core.merge.AndroidPanoramaStitcher
+import com.lumina.studio.core.merge.MergeInput
+import com.lumina.studio.core.merge.MergeKind
+import com.lumina.studio.core.merge.MergeProgress
+import com.lumina.studio.core.merge.MergeProjects
 import com.lumina.studio.core.presets.PresetShare
 import com.lumina.studio.core.presets.SettingGroups
+import com.lumina.studio.core.render.RenderResult
 import com.lumina.studio.core.util.ImageFiles
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -53,6 +60,18 @@ data class BatchUiState(
     val progress: Float = 0f,
     val results: List<BatchItemResult> = emptyList(),
     val summary: String? = null
+)
+
+/**
+ * M17 merge progress state. Failures surface through [notice] (specific
+ * [com.lumina.studio.core.merge.MergeError] messages) so no corrupt
+ * project is ever created; success yields [doneProjectId] for navigation.
+ */
+data class MergeUiState(
+    val running: Boolean = false,
+    val mode: MergeKind? = null,
+    val progress: Float = 0f,
+    val doneProjectId: String? = null
 )
 
 data class ProjectsUiState(
@@ -119,11 +138,15 @@ class ProjectsViewModel(application: Application) : AndroidViewModel(application
     private val _cullState = MutableStateFlow(CullUiState())
     val cullState: StateFlow<CullUiState> = _cullState.asStateFlow()
 
+    private val _mergeState = MutableStateFlow(MergeUiState())
+    val mergeState: StateFlow<MergeUiState> = _mergeState.asStateFlow()
+
     val albumStore: StateFlow<AlbumStore> = albumRepository.store
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), AlbumStore.EMPTY)
 
     private var batchJob: Job? = null
     private var cullJob: Job? = null
+    private var mergeJob: Job? = null
 
     private var lastDeleted: Project? = null
 
@@ -443,6 +466,102 @@ class ProjectsViewModel(application: Application) : AndroidViewModel(application
         batchJob?.cancel()
         batchJob = null
         _batchState.value = _batchState.value.copy(running = false)
+    }
+
+    // ---------- M17 merge (HDR + panorama) ----------
+
+    fun startHdrMerge(ids: List<String>) = startMerge(ids, MergeKind.HDR)
+
+    fun startPanoramaStitch(ids: List<String>) = startMerge(ids, MergeKind.PANORAMA)
+
+    private fun startMerge(ids: List<String>, kind: MergeKind) {
+        if (_mergeState.value.running) return
+        if (ids.size < 2) {
+            _notice.value = "Select at least 2 photos to merge."
+            return
+        }
+        mergeJob?.cancel()
+        _mergeState.value = MergeUiState(running = true, mode = kind, progress = 0f)
+        mergeJob = viewModelScope.launch(Dispatchers.Default) {
+            try {
+                val app = getApplication<Application>()
+                val projects = withContext(Dispatchers.IO) {
+                    ids.mapNotNull { database.projectDao().getById(it) }
+                }
+                if (projects.size < 2) {
+                    failMerge("Some selected photos no longer exist.")
+                    return@launch
+                }
+                val missing = projects.firstOrNull { project ->
+                    val uri = project.photoUri
+                    uri.isNullOrBlank() || !java.io.File(uri).isFile
+                }
+                if (missing != null) {
+                    failMerge("Original file is missing for “${missing.name}” — cannot merge.")
+                    return@launch
+                }
+                val inputs = projects.map { MergeInput(it.photoUri!!) }
+                val progressCb = MergeProgress { f ->
+                    _mergeState.value = _mergeState.value.copy(progress = f)
+                }
+                val result = when (kind) {
+                    MergeKind.HDR -> AndroidHdrMerger.merge(inputs, progressCb)
+                    MergeKind.PANORAMA -> AndroidPanoramaStitcher.stitch(inputs, progressCb)
+                }
+                when (result) {
+                    is RenderResult.Ok -> {
+                        val project = withContext(Dispatchers.IO) {
+                            MergeProjects.storeResult(app, result.bitmap, kind)
+                        }
+                        runCatching { if (!result.bitmap.isRecycled) result.bitmap.recycle() }
+                        if (project == null) {
+                            failMerge("Could not save the merged photo.")
+                        } else {
+                            _selectedIds.value = emptySet()
+                            _mergeState.value = MergeUiState(doneProjectId = project.id)
+                            _notice.value = if (kind == MergeKind.HDR) {
+                                "HDR merged: ${project.name}"
+                            } else {
+                                "Panorama stitched: ${project.name}"
+                            }
+                        }
+                    }
+                    is RenderResult.Unavailable -> {
+                        val prefix = if (kind == MergeKind.HDR) "HDR merge failed: " else "Stitch failed: "
+                        failMerge(prefix + result.reason)
+                    }
+                    RenderResult.OomBudget -> {
+                        failMerge("These photos are too large to merge on this device.")
+                    }
+                }
+            } catch (e: Exception) {
+                // M16 (§54): never swallow cancellation as a notice.
+                if (e is kotlinx.coroutines.CancellationException) {
+                    _mergeState.value = MergeUiState()
+                    throw e
+                }
+                failMerge(e.message ?: "Merge failed.")
+            }
+        }
+    }
+
+    private fun failMerge(message: String) {
+        _mergeState.value = MergeUiState()
+        _notice.value = message
+    }
+
+    fun cancelMerge() {
+        mergeJob?.cancel()
+        mergeJob = null
+        if (_mergeState.value.running) {
+            _mergeState.value = MergeUiState()
+        }
+    }
+
+    fun consumeMergeDone() {
+        if (_mergeState.value.doneProjectId != null) {
+            _mergeState.value = _mergeState.value.copy(doneProjectId = null)
+        }
     }
 
     fun clearBatchState() {

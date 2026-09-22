@@ -80,6 +80,7 @@ import com.lumina.studio.core.util.timeAgo
 import com.lumina.studio.core.library.PresetFilter
 import com.lumina.studio.core.library.RecencyFilter
 import com.lumina.studio.core.library.TypeFilter
+import com.lumina.studio.core.merge.MergeKind
 import com.lumina.studio.navigation.Routes
 import kotlinx.coroutines.launch
 import java.io.File
@@ -95,6 +96,7 @@ fun ProjectsScreen(
     val notice by projectsViewModel.notice.collectAsState()
     val selectedIds by projectsViewModel.selectedIds.collectAsState()
     val batchState by projectsViewModel.batchState.collectAsState()
+    val mergeState by projectsViewModel.mergeState.collectAsState()
     val cullState by projectsViewModel.cullState.collectAsState()
     val presets by presetsViewModel.presets.collectAsState()
     val presetMessage by presetsViewModel.message.collectAsState()
@@ -136,6 +138,15 @@ fun ProjectsScreen(
             for (id in stale) projectsViewModel.toggleSelect(id)
         }
         if (uiState.projects.isEmpty()) selectMode = false
+    }
+
+    val mergedId = mergeState.doneProjectId
+    LaunchedEffect(mergedId) {
+        if (mergedId != null) {
+            selectMode = false
+            projectsViewModel.consumeMergeDone()
+            navController.navigate(Routes.projectDetail(mergedId))
+        }
     }
 
     Scaffold(
@@ -395,6 +406,39 @@ fun ProjectsScreen(
                 ) {
                     OutlinedButton(
                         onClick = {
+                            projectsViewModel.startHdrMerge(selectedIds.toList())
+                        },
+                        enabled = selectedIds.size >= 2 && !mergeState.running,
+                        modifier = Modifier
+                            .weight(1f)
+                            .heightIn(min = 48.dp)
+                    ) {
+                        Text(
+                            if (mergeState.running && mergeState.mode == MergeKind.HDR) "Merging…"
+                            else "Merge HDR"
+                        )
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            projectsViewModel.startPanoramaStitch(selectedIds.toList())
+                        },
+                        enabled = selectedIds.size >= 2 && !mergeState.running,
+                        modifier = Modifier
+                            .weight(1f)
+                            .heightIn(min = 48.dp)
+                    ) {
+                        Text(
+                            if (mergeState.running && mergeState.mode == MergeKind.PANORAMA) "Stitching…"
+                            else "Stitch panorama"
+                        )
+                    }
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = {
                             projectsViewModel.startBatchExport(selectedIds.toList())
                         },
                         enabled = !batchState.running,
@@ -536,6 +580,40 @@ fun ProjectsScreen(
                         }
                     }
                 }
+            }
+            if (mergeState.running) {
+                AlertDialog(
+                    onDismissRequest = { },
+                    title = {
+                        Text(
+                            if (mergeState.mode == MergeKind.PANORAMA) "Stitching panorama…"
+                            else "Merging HDR…"
+                        )
+                    },
+                    text = {
+                        Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            LinearProgressIndicator(
+                                progress = { mergeState.progress.coerceIn(0f, 1f) },
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            Text(
+                                "${(mergeState.progress.coerceIn(0f, 1f) * 100).toInt()}% — keep this screen open.",
+                                style = LuminaCaptionTextStyle,
+                                color = LuminaMuted
+                            )
+                        }
+                    },
+                    confirmButton = {},
+                    dismissButton = {
+                        TextButton(
+                            onClick = { projectsViewModel.cancelMerge() },
+                            modifier = Modifier.heightIn(min = 48.dp)
+                        ) { Text("Cancel") }
+                    }
+                )
             }
             if (presetPickerOpen) {
                 AlertDialog(

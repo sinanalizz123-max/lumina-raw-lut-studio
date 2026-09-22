@@ -14,6 +14,7 @@ object EditHistoryLog {
     const val MASKS = "masks"
     const val CROP = "crop"
     const val STEP = "step"
+    const val MERGE = "merge"
 
     suspend fun log(database: LuminaDatabase, projectId: String?, tool: String) {
         if (projectId.isNullOrBlank()) return
