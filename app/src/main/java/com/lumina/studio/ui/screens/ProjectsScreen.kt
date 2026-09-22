@@ -1,7 +1,9 @@
 package com.lumina.studio.ui.screens
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -13,11 +15,17 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.StarBorder
@@ -36,6 +44,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -56,6 +65,8 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavController
 import coil.compose.AsyncImage
 import com.lumina.studio.core.data.local.Project
+import com.lumina.studio.core.design.components.AppBottomSheet
+import com.lumina.studio.core.design.components.AppDialog
 import com.lumina.studio.core.design.components.CategoryChip
 import com.lumina.studio.core.design.components.EmptyState
 import com.lumina.studio.core.design.components.EmptyStateIllustration
@@ -66,6 +77,9 @@ import com.lumina.studio.core.design.theme.LuminaSectionHeaderTextStyle
 import com.lumina.studio.core.design.theme.LuminaSurfaceContainerLow
 import com.lumina.studio.core.util.ImageFiles
 import com.lumina.studio.core.util.timeAgo
+import com.lumina.studio.core.library.PresetFilter
+import com.lumina.studio.core.library.RecencyFilter
+import com.lumina.studio.core.library.TypeFilter
 import com.lumina.studio.navigation.Routes
 import kotlinx.coroutines.launch
 import java.io.File
@@ -81,12 +95,21 @@ fun ProjectsScreen(
     val notice by projectsViewModel.notice.collectAsState()
     val selectedIds by projectsViewModel.selectedIds.collectAsState()
     val batchState by projectsViewModel.batchState.collectAsState()
+    val cullState by projectsViewModel.cullState.collectAsState()
     val presets by presetsViewModel.presets.collectAsState()
     val presetMessage by presetsViewModel.message.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
     var selectMode by remember { mutableStateOf(false) }
     var presetPickerOpen by remember { mutableStateOf(false) }
+    var albumPickerIds by remember { mutableStateOf<List<String>?>(null) }
+    var albumDetailId by remember { mutableStateOf<String?>(null) }
+    var newAlbumOpen by remember { mutableStateOf(false) }
+    var newAlbumName by remember { mutableStateOf("") }
+    var newAlbumTarget by remember { mutableStateOf<List<String>?>(null) }
+    var cullOpen by remember { mutableStateOf(false) }
+    var confirmDeleteIds by remember { mutableStateOf<List<String>?>(null) }
+    var confirmDeleteAlbumId by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(notice) {
         if (notice != null) {
@@ -100,6 +123,10 @@ fun ProjectsScreen(
             snackbarHostState.showSnackbar(presetMessage!!)
             presetsViewModel.consumeMessage()
         }
+    }
+
+    LaunchedEffect(cullOpen) {
+        if (cullOpen) projectsViewModel.startCullReview()
     }
 
     LaunchedEffect(uiState.projects) {
@@ -165,6 +192,177 @@ fun ProjectsScreen(
                         if (!selectMode) projectsViewModel.clearSelection()
                     }
                 )
+                CategoryChip(
+                    label = "Review",
+                    selected = cullOpen,
+                    onClick = { cullOpen = true }
+                )
+            }
+            LazyRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                item {
+                    CategoryChip(
+                        label = "All types",
+                        selected = uiState.typeFilter == TypeFilter.ALL,
+                        onClick = { projectsViewModel.setTypeFilter(TypeFilter.ALL) }
+                    )
+                }
+                item {
+                    CategoryChip(
+                        label = "RAW",
+                        selected = uiState.typeFilter == TypeFilter.RAW,
+                        onClick = {
+                            projectsViewModel.setTypeFilter(
+                                if (uiState.typeFilter == TypeFilter.RAW) TypeFilter.ALL
+                                else TypeFilter.RAW
+                            )
+                        }
+                    )
+                }
+                item {
+                    CategoryChip(
+                        label = "DNG",
+                        selected = uiState.typeFilter == TypeFilter.DNG,
+                        onClick = {
+                            projectsViewModel.setTypeFilter(
+                                if (uiState.typeFilter == TypeFilter.DNG) TypeFilter.ALL
+                                else TypeFilter.DNG
+                            )
+                        }
+                    )
+                }
+                item {
+                    CategoryChip(
+                        label = "Edited",
+                        selected = uiState.typeFilter == TypeFilter.EDITED,
+                        onClick = {
+                            projectsViewModel.setTypeFilter(
+                                if (uiState.typeFilter == TypeFilter.EDITED) TypeFilter.ALL
+                                else TypeFilter.EDITED
+                            )
+                        }
+                    )
+                }
+                item {
+                    CategoryChip(
+                        label = "Other",
+                        selected = uiState.typeFilter == TypeFilter.OTHER,
+                        onClick = {
+                            projectsViewModel.setTypeFilter(
+                                if (uiState.typeFilter == TypeFilter.OTHER) TypeFilter.ALL
+                                else TypeFilter.OTHER
+                            )
+                        }
+                    )
+                }
+                item {
+                    CategoryChip(
+                        label = "Has preset",
+                        selected = uiState.presetFilter == PresetFilter.WITH_PRESET,
+                        onClick = {
+                            projectsViewModel.setPresetFilter(
+                                if (uiState.presetFilter == PresetFilter.WITH_PRESET) PresetFilter.ALL
+                                else PresetFilter.WITH_PRESET
+                            )
+                        }
+                    )
+                }
+                item {
+                    CategoryChip(
+                        label = "No preset",
+                        selected = uiState.presetFilter == PresetFilter.WITHOUT_PRESET,
+                        onClick = {
+                            projectsViewModel.setPresetFilter(
+                                if (uiState.presetFilter == PresetFilter.WITHOUT_PRESET) PresetFilter.ALL
+                                else PresetFilter.WITHOUT_PRESET
+                            )
+                        }
+                    )
+                }
+                item {
+                    CategoryChip(
+                        label = "Recent imports",
+                        selected = uiState.recencyFilter == RecencyFilter.RECENT_IMPORT,
+                        onClick = {
+                            projectsViewModel.setRecencyFilter(
+                                if (uiState.recencyFilter == RecencyFilter.RECENT_IMPORT) RecencyFilter.ALL
+                                else RecencyFilter.RECENT_IMPORT
+                            )
+                        }
+                    )
+                }
+                item {
+                    CategoryChip(
+                        label = "Recent edits",
+                        selected = uiState.recencyFilter == RecencyFilter.RECENT_EDIT,
+                        onClick = {
+                            projectsViewModel.setRecencyFilter(
+                                if (uiState.recencyFilter == RecencyFilter.RECENT_EDIT) RecencyFilter.ALL
+                                else RecencyFilter.RECENT_EDIT
+                            )
+                        }
+                    )
+                }
+            }
+            LazyRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                item {
+                    CategoryChip(
+                        label = "All photos",
+                        selected = uiState.activeAlbumId == null,
+                        onClick = { projectsViewModel.setActiveAlbum(null) }
+                    )
+                }
+                items(uiState.albums, key = { it.id }) { album ->
+                    val count = uiState.albumCounts[album.id] ?: 0
+                    CategoryChip(
+                        label = "${album.name} ($count)",
+                        selected = uiState.activeAlbumId == album.id,
+                        onClick = {
+                            projectsViewModel.setActiveAlbum(
+                                if (uiState.activeAlbumId == album.id) null else album.id
+                            )
+                        }
+                    )
+                }
+                item {
+                    CategoryChip(
+                        label = "+ New album",
+                        selected = false,
+                        onClick = {
+                            newAlbumTarget = null
+                            newAlbumName = ""
+                            newAlbumOpen = true
+                        }
+                    )
+                }
+            }
+            val activeAlbum = uiState.albums.firstOrNull { it.id == uiState.activeAlbumId }
+            if (activeAlbum != null) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "Album: ${activeAlbum.name}",
+                        style = LuminaCaptionTextStyle,
+                        color = LuminaMuted,
+                        modifier = Modifier.weight(1f)
+                    )
+                    OutlinedButton(
+                        onClick = { albumDetailId = activeAlbum.id },
+                        modifier = Modifier.heightIn(min = 48.dp)
+                    ) { Text("Open") }
+                    OutlinedButton(
+                        onClick = { projectsViewModel.setActiveAlbum(null) },
+                        modifier = Modifier.heightIn(min = 48.dp)
+                    ) { Text("All") }
+                }
             }
             if (selectMode && selectedIds.isNotEmpty()) {
                 Text(
@@ -211,6 +409,31 @@ fun ProjectsScreen(
                             .heightIn(min = 48.dp)
                     ) { Text("Clear") }
                 }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = {
+                            projectsViewModel.selectAll(uiState.projects.map { it.id })
+                        },
+                        modifier = Modifier
+                            .weight(1f)
+                            .heightIn(min = 48.dp)
+                    ) { Text("Select all") }
+                    OutlinedButton(
+                        onClick = { albumPickerIds = selectedIds.toList() },
+                        modifier = Modifier
+                            .weight(1f)
+                            .heightIn(min = 48.dp)
+                    ) { Text("Album") }
+                    OutlinedButton(
+                        onClick = { confirmDeleteIds = selectedIds.toList() },
+                        modifier = Modifier
+                            .weight(1f)
+                            .heightIn(min = 48.dp)
+                    ) { Text("Delete") }
+                }
                 if (batchState.running) {
                     LinearProgressIndicator(
                         progress = { batchState.progress.coerceIn(0f, 1f) },
@@ -240,7 +463,11 @@ fun ProjectsScreen(
                 }
             }
             if (uiState.projects.isEmpty()) {
-                val filtered = uiState.query.isNotBlank() || uiState.favoritesOnly
+                val filtered = uiState.query.isNotBlank() || uiState.favoritesOnly ||
+                    uiState.typeFilter != TypeFilter.ALL ||
+                    uiState.presetFilter != PresetFilter.ALL ||
+                    uiState.recencyFilter != RecencyFilter.ALL ||
+                    uiState.activeAlbumId != null
                 EmptyState(
                     title = "No projects yet",
                     message = if (filtered)
@@ -269,6 +496,11 @@ fun ProjectsScreen(
                                     navController.navigate(Routes.projectDetail(project.id))
                                 }
                             },
+                            onLongPress = {
+                                if (!selectMode) selectMode = true
+                                projectsViewModel.toggleSelect(project.id)
+                            },
+                            onAddToAlbum = { albumPickerIds = listOf(project.id) },
                             onToggleFavorite = { projectsViewModel.toggleFavorite(project) },
                             onDuplicate = { projectsViewModel.duplicate(project) },
                             onDelete = {
@@ -346,7 +578,385 @@ fun ProjectsScreen(
                     }
                 )
             }
+            val pickerIds = albumPickerIds
+            if (pickerIds != null) {
+                AppBottomSheet(onDismiss = { albumPickerIds = null }) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Text(
+                            "Add ${pickerIds.size} photo(s) to album",
+                            style = LuminaSectionHeaderTextStyle,
+                            color = LuminaOnSurface
+                        )
+                        if (uiState.albums.isEmpty()) {
+                            Text(
+                                "No albums yet — create one below.",
+                                style = LuminaCaptionTextStyle,
+                                color = LuminaMuted
+                            )
+                        } else {
+                            LazyColumn(
+                                verticalArrangement = Arrangement.spacedBy(4.dp),
+                                modifier = Modifier.heightIn(max = 320.dp)
+                            ) {
+                                items(uiState.albums, key = { it.id }) { album ->
+                                    TextButton(
+                                        onClick = {
+                                            projectsViewModel.addToAlbum(album.id, pickerIds)
+                                            albumPickerIds = null
+                                        },
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .heightIn(min = 48.dp)
+                                    ) {
+                                        Text(
+                                            "${album.name} (${uiState.albumCounts[album.id] ?: 0})",
+                                            modifier = Modifier.fillMaxWidth()
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                        OutlinedButton(
+                            onClick = {
+                                newAlbumTarget = pickerIds
+                                newAlbumName = ""
+                                newAlbumOpen = true
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 48.dp)
+                        ) { Text("New album") }
+                    }
+                }
+            }
+            if (newAlbumOpen) {
+                AlertDialog(
+                    onDismissRequest = {
+                        newAlbumOpen = false
+                        newAlbumTarget = null
+                    },
+                    title = { Text("New album") },
+                    text = {
+                        OutlinedTextField(
+                            value = newAlbumName,
+                            onValueChange = { newAlbumName = it },
+                            label = { Text("Album name") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    },
+                    confirmButton = {
+                        TextButton(
+                            onClick = {
+                                val target = newAlbumTarget
+                                projectsViewModel.createAlbum(newAlbumName) { album ->
+                                    if (album != null && target != null) {
+                                        projectsViewModel.addToAlbum(album.id, target)
+                                        albumPickerIds = null
+                                    }
+                                }
+                                newAlbumOpen = false
+                                newAlbumName = ""
+                                newAlbumTarget = null
+                            },
+                            modifier = Modifier.heightIn(min = 48.dp)
+                        ) { Text("Create") }
+                    },
+                    dismissButton = {
+                        TextButton(
+                            onClick = {
+                                newAlbumOpen = false
+                                newAlbumTarget = null
+                            },
+                            modifier = Modifier.heightIn(min = 48.dp)
+                        ) { Text("Cancel") }
+                    }
+                )
+            }
+            val detailAlbum = uiState.albums.firstOrNull { it.id == albumDetailId }
+            if (detailAlbum != null) {
+                AppBottomSheet(onDismiss = { albumDetailId = null }) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Text(
+                                detailAlbum.name,
+                                style = LuminaSectionHeaderTextStyle,
+                                color = LuminaOnSurface,
+                                modifier = Modifier.weight(1f)
+                            )
+                            IconButton(
+                                onClick = { albumDetailId = null },
+                                modifier = Modifier.size(48.dp)
+                            ) {
+                                Icon(Icons.Filled.Close, contentDescription = "Close")
+                            }
+                        }
+                        Text(
+                            "Removing photos here keeps them in your library.",
+                            style = LuminaCaptionTextStyle,
+                            color = LuminaMuted
+                        )
+                        val members = uiState.projects
+                        Text(
+                            "${members.size} photo(s)",
+                            style = LuminaCaptionTextStyle,
+                            color = LuminaMuted
+                        )
+                        if (members.isNotEmpty()) {
+                            LazyVerticalGrid(
+                                columns = GridCells.Fixed(3),
+                                verticalArrangement = Arrangement.spacedBy(8.dp),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                modifier = Modifier.heightIn(max = 400.dp)
+                            ) {
+                                gridItems(members, key = { it.id }) { project ->
+                                    Box {
+                                        val model: Any? = project.photoUri?.let { path ->
+                                            val file = File(path)
+                                            if (file.exists()) file else path
+                                        }
+                                        AsyncImage(
+                                            model = model,
+                                            contentDescription = project.name,
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .height(112.dp)
+                                                .clip(RoundedCornerShape(16.dp))
+                                                .clickable {
+                                                    albumDetailId = null
+                                                    navController.navigate(
+                                                        Routes.projectDetail(project.id)
+                                                    )
+                                                },
+                                            contentScale = ContentScale.Crop
+                                        )
+                                        IconButton(
+                                            onClick = {
+                                                projectsViewModel.removeFromAlbum(
+                                                    detailAlbum.id, listOf(project.id)
+                                                )
+                                            },
+                                            modifier = Modifier
+                                                .align(Alignment.TopEnd)
+                                                .size(48.dp)
+                                        ) {
+                                            Icon(
+                                                Icons.Filled.Close,
+                                                contentDescription = "Remove from album"
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        OutlinedButton(
+                            onClick = { confirmDeleteAlbumId = detailAlbum.id },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 48.dp)
+                        ) { Text("Delete album (keeps photos)") }
+                    }
+                }
+            }
+            if (cullOpen) {
+                AppBottomSheet(
+                    onDismiss = {
+                        cullOpen = false
+                        projectsViewModel.cancelCullReview()
+                    }
+                ) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Text(
+                            "Review photos",
+                            style = LuminaSectionHeaderTextStyle,
+                            color = LuminaOnSurface
+                        )
+                        Text(
+                            "Heuristic flags only — nothing is deleted automatically. You decide.",
+                            style = LuminaCaptionTextStyle,
+                            color = LuminaMuted
+                        )
+                        if (cullState.running) {
+                            LinearProgressIndicator(
+                                progress = {
+                                    if (cullState.total <= 0) 0f
+                                    else cullState.done.toFloat() / cullState.total.toFloat()
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            Text(
+                                "Analyzing ${cullState.done} of ${cullState.total}…",
+                                style = LuminaCaptionTextStyle,
+                                color = LuminaMuted
+                            )
+                        }
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = { projectsViewModel.selectFlaggedCull() },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .heightIn(min = 48.dp)
+                            ) { Text("Select flagged") }
+                            OutlinedButton(
+                                onClick = { projectsViewModel.clearCullChecked() },
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .heightIn(min = 48.dp)
+                            ) { Text("Clear") }
+                        }
+                        val reviewIds = cullState.names.keys.toList()
+                        if (reviewIds.isEmpty() && !cullState.running) {
+                            Text(
+                                "No photos to review.",
+                                style = LuminaCaptionTextStyle,
+                                color = LuminaMuted
+                            )
+                        } else {
+                            LazyColumn(
+                                verticalArrangement = Arrangement.spacedBy(8.dp),
+                                modifier = Modifier.heightIn(max = 380.dp)
+                            ) {
+                                items(reviewIds, key = { it }) { id ->
+                                    val flags = cullState.flagsFor(id)
+                                    val name = cullState.names[id] ?: "Photo"
+                                    val photo = uiState.projects.firstOrNull { it.id == id }
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        Checkbox(
+                                            checked = id in cullState.checked,
+                                            onCheckedChange = {
+                                                projectsViewModel.toggleCullChecked(id)
+                                            },
+                                            modifier = Modifier.size(48.dp)
+                                        )
+                                        val model: Any? = photo?.photoUri?.let { path ->
+                                            val file = File(path)
+                                            if (file.exists()) file else path
+                                        }
+                                        if (model != null) {
+                                            AsyncImage(
+                                                model = model,
+                                                contentDescription = name,
+                                                modifier = Modifier
+                                                    .size(56.dp)
+                                                    .clip(RoundedCornerShape(12.dp)),
+                                                contentScale = ContentScale.Crop
+                                            )
+                                        }
+                                        Column(modifier = Modifier.weight(1f)) {
+                                            Text(
+                                                name,
+                                                style = LuminaSectionHeaderTextStyle,
+                                                color = LuminaOnSurface,
+                                                maxLines = 1
+                                            )
+                                            val badges = flags?.badges(
+                                                cullState.duplicates[id]?.let { dupId ->
+                                                    cullState.names[dupId]?.take(18)
+                                                }
+                                            ).orEmpty()
+                                            if (flags == null && cullState.running) {
+                                                Text(
+                                                    "Analyzing…",
+                                                    style = LuminaCaptionTextStyle,
+                                                    color = LuminaMuted
+                                                )
+                                            } else if (badges.isEmpty()) {
+                                                Text(
+                                                    "Looks fine",
+                                                    style = LuminaCaptionTextStyle,
+                                                    color = LuminaMuted
+                                                )
+                                            } else {
+                                                Row(
+                                                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                                ) {
+                                                    badges.forEach { badge ->
+                                                        CullBadge(badge)
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        OutlinedButton(
+                            onClick = { confirmDeleteIds = cullState.checked.toList() },
+                            enabled = cullState.checked.isNotEmpty(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .heightIn(min = 48.dp)
+                        ) { Text("Delete selected (${cullState.checked.size})") }
+                    }
+                }
+            }
+            val deleteIds = confirmDeleteIds
+            if (deleteIds != null) {
+                AppDialog(
+                    title = "Delete ${deleteIds.size} photo(s)?",
+                    message = "This removes the projects and their files. " +
+                        "Album membership is dropped too. This cannot be undone.",
+                    onDismiss = { confirmDeleteIds = null },
+                    onConfirm = {
+                        projectsViewModel.deleteMany(deleteIds)
+                        projectsViewModel.clearCullChecked()
+                        if (!cullOpen) {
+                            selectMode = false
+                        }
+                        confirmDeleteIds = null
+                    },
+                    confirmLabel = "Delete"
+                )
+            }
+            val deleteAlbumId = confirmDeleteAlbumId
+            if (deleteAlbumId != null) {
+                AppDialog(
+                    title = "Delete album?",
+                    message = "Photos stay in your library — only the album is removed.",
+                    onDismiss = { confirmDeleteAlbumId = null },
+                    onConfirm = {
+                        projectsViewModel.deleteAlbum(deleteAlbumId)
+                        albumDetailId = null
+                        confirmDeleteAlbumId = null
+                    },
+                    confirmLabel = "Delete"
+                )
+            }
         }
+    }
+}
+
+@Composable
+private fun CullBadge(text: String) {
+    Surface(
+        shape = RoundedCornerShape(8.dp),
+        color = LuminaSurfaceContainerLow,
+        contentColor = LuminaOnSurface
+    ) {
+        Text(
+            text,
+            style = LuminaCaptionTextStyle,
+            color = LuminaOnSurface,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+        )
     }
 }
 
@@ -361,13 +971,15 @@ fun ProjectRow(
     modifier: Modifier = Modifier,
     selected: Boolean = false,
     showSelect: Boolean = false,
-    onToggleSelect: () -> Unit = {}
+    onToggleSelect: () -> Unit = {},
+    onLongPress: () -> Unit = {},
+    onAddToAlbum: () -> Unit = {}
 ) {
     Card(
         modifier = modifier
             .fillMaxWidth()
             .heightIn(min = 48.dp)
-            .clickable(onClick = onOpen),
+            .combinedClickable(onClick = onOpen, onLongClick = onLongPress),
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(
             containerColor = LuminaSurfaceContainerLow
@@ -429,6 +1041,9 @@ fun ProjectRow(
                         if (project.isFavorite) Icons.Filled.Star else Icons.Filled.StarBorder,
                         contentDescription = "Favorite"
                     )
+                }
+                IconButton(onClick = onAddToAlbum, modifier = Modifier.size(48.dp)) {
+                    Icon(Icons.Filled.Folder, contentDescription = "Add to album")
                 }
                 IconButton(onClick = onDuplicate, modifier = Modifier.size(48.dp)) {
                     Icon(Icons.Filled.ContentCopy, contentDescription = "Duplicate")
