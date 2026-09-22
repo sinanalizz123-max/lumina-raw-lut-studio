@@ -42,30 +42,68 @@ class BitmapFactoryDecoder(private val appContext: Context) : ImageDecoder<Bitma
     override fun decode(source: RenderSource, maxDim: Int): Bitmap? {
         return when (source) {
             is RenderSource.File -> decodeFile(source.path, maxDim)
-            is RenderSource.Content -> decodeContent(source.uri)
+            is RenderSource.Content -> decodeContent(source.uri, maxDim)
         }
     }
 
     private fun decodeFile(path: String, maxDim: Int): Bitmap? {
         return try {
             PreviewRenderer.decodePreview(path, maxDim) ?: run {
-                val opts = BitmapFactory.Options().apply {
-                    inPreferredConfig = Bitmap.Config.ARGB_8888
-                }
-                BitmapFactory.decodeFile(path, opts)
+                decodeFileSampled(path, maxDim)
             }
         } catch (_: Exception) {
             null
         }
     }
 
-    private fun decodeContent(uri: String): Bitmap? {
+    private fun decodeContent(uri: String, maxDim: Int): Bitmap? {
         return try {
-            appContext.contentResolver.openInputStream(uri.toUri())?.use { input ->
-                BitmapFactory.decodeStream(input)
+            val parsed = uri.toUri()
+            val resolver = appContext.contentResolver
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            resolver.openInputStream(parsed)?.use { input ->
+                BitmapFactory.decodeStream(input, null, bounds)
             }
+            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+            resolver.openInputStream(parsed)?.use { input ->
+                BitmapFactory.decodeStream(
+                    input,
+                    null,
+                    sampledOptions(bounds.outWidth, bounds.outHeight, maxDim)
+                )
+            }
+        } catch (_: OutOfMemoryError) {
+            null
         } catch (_: Exception) {
             null
+        }
+    }
+
+    private fun decodeFileSampled(path: String, maxDim: Int): Bitmap? {
+        return try {
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(path, bounds)
+            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+            BitmapFactory.decodeFile(
+                path,
+                sampledOptions(bounds.outWidth, bounds.outHeight, maxDim)
+            )
+        } catch (_: OutOfMemoryError) {
+            null
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun sampledOptions(width: Int, height: Int, maxDim: Int): BitmapFactory.Options {
+        val safeMaxDim = maxDim.coerceAtLeast(1)
+        val longest = maxOf(width, height).toLong()
+        val sample = ((longest + safeMaxDim - 1L) / safeMaxDim)
+            .coerceIn(1L, Int.MAX_VALUE.toLong())
+            .toInt()
+        return BitmapFactory.Options().apply {
+            inSampleSize = sample
+            inPreferredConfig = Bitmap.Config.ARGB_8888
         }
     }
 
