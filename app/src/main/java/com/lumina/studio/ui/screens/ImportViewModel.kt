@@ -104,9 +104,9 @@ class ImportViewModel(application: Application) : AndroidViewModel(application) 
                         database.projectDao().upsert(project)
                         EditHistoryLog.log(database, project.id, EditHistoryLog.IMPORT)
                         ImportResult.Success(project.id, false, ExifInfo())
-                    } catch (e: Exception) {
+                    } catch (t: Throwable) {
                         runCatching { ProjectStore.deleteProjectFiles(app, projectId) }
-                        throw e
+                        throw t
                     }
                 }.getOrElse { e -> ImportResult.Error(e.message ?: "Import failed") }
             }
