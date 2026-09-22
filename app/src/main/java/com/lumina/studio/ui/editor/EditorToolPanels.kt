@@ -173,6 +173,44 @@ fun EditorToolPanel(
             onResetAll = {},
             modifier = modifier
         )
+        EditorTool.RETOUCH -> RetouchPanel(
+            params = params,
+            selectedId = null,
+            mode = com.lumina.studio.core.edit.RetouchKind.HEAL,
+            placeArmed = false,
+            cloneSourceArmedId = null,
+            dustSensitivity = 50f,
+            dustCandidates = emptyList(),
+            onMode = {},
+            onArmPlace = {},
+            onSelect = {},
+            onRemove = {},
+            onCenter = { _, _, _ -> },
+            onRadius = { _, _ -> },
+            onFeather = { _, _ -> },
+            onOpacity = { _, _ -> },
+            onArmCloneSource = {},
+            onDustSensitivity = {},
+            onScanDust = {},
+            onToggleCandidate = {},
+            onRemoveCandidate = {},
+            onHealConfirmed = {},
+            onClearCandidates = {},
+            onResetAll = {},
+            modifier = modifier
+        )
+        EditorTool.BLUR -> BlurPanel(
+            params = params,
+            focusArmed = false,
+            showDepth = false,
+            onArmFocus = {},
+            onAmount = {},
+            onTransition = {},
+            onFocusRadius = {},
+            onToggleDepth = {},
+            onReset = {},
+            modifier = modifier
+        )
     }
 }
 
@@ -535,6 +573,88 @@ fun CropToolPanel(
         onCa = onCa,
         onDistortion = onDistortion,
         onResetOptics = onResetOptics
+    )
+}
+
+@Composable
+fun RetouchToolPanel(
+    params: EditParams,
+    selectedId: String?,
+    mode: com.lumina.studio.core.edit.RetouchKind,
+    placeArmed: Boolean,
+    cloneSourceArmedId: String?,
+    dustSensitivity: Float,
+    dustCandidates: List<com.lumina.studio.core.edit.DustCandidate>,
+    onMode: (com.lumina.studio.core.edit.RetouchKind) -> Unit,
+    onArmPlace: (Boolean) -> Unit,
+    onSelect: (String) -> Unit,
+    onRemove: (String) -> Unit,
+    onCenter: (String, Float, Float) -> Unit,
+    onRadius: (String, Float) -> Unit,
+    onFeather: (String, Float) -> Unit,
+    onOpacity: (String, Float) -> Unit,
+    onArmCloneSource: (String?) -> Unit,
+    onDustSensitivity: (Float) -> Unit,
+    onScanDust: () -> Unit,
+    onToggleCandidate: (String) -> Unit,
+    onRemoveCandidate: (String) -> Unit,
+    onHealConfirmed: () -> Unit,
+    onClearCandidates: () -> Unit,
+    onResetAll: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    RetouchPanel(
+        params = params,
+        selectedId = selectedId,
+        mode = mode,
+        placeArmed = placeArmed,
+        cloneSourceArmedId = cloneSourceArmedId,
+        dustSensitivity = dustSensitivity,
+        dustCandidates = dustCandidates,
+        onMode = onMode,
+        onArmPlace = onArmPlace,
+        onSelect = onSelect,
+        onRemove = onRemove,
+        onCenter = onCenter,
+        onRadius = onRadius,
+        onFeather = onFeather,
+        onOpacity = onOpacity,
+        onArmCloneSource = onArmCloneSource,
+        onDustSensitivity = onDustSensitivity,
+        onScanDust = onScanDust,
+        onToggleCandidate = onToggleCandidate,
+        onRemoveCandidate = onRemoveCandidate,
+        onHealConfirmed = onHealConfirmed,
+        onClearCandidates = onClearCandidates,
+        onResetAll = onResetAll,
+        modifier = modifier
+    )
+}
+
+@Composable
+fun BlurToolPanel(
+    params: EditParams,
+    focusArmed: Boolean,
+    showDepth: Boolean,
+    onArmFocus: (Boolean) -> Unit,
+    onAmount: (Float) -> Unit,
+    onTransition: (Float) -> Unit,
+    onFocusRadius: (Float) -> Unit,
+    onToggleDepth: (Boolean) -> Unit,
+    onReset: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    BlurPanel(
+        params = params,
+        focusArmed = focusArmed,
+        showDepth = showDepth,
+        onArmFocus = onArmFocus,
+        onAmount = onAmount,
+        onTransition = onTransition,
+        onFocusRadius = onFocusRadius,
+        onToggleDepth = onToggleDepth,
+        onReset = onReset,
+        modifier = modifier
     )
 }
 

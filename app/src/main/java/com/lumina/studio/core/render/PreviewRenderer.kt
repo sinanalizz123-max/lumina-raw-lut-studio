@@ -10,7 +10,13 @@ import android.graphics.Paint
 import com.lumina.studio.core.edit.CropParams
 import com.lumina.studio.core.edit.CurveChannel
 import com.lumina.studio.core.edit.Curves
+import com.lumina.studio.core.edit.DustCandidate
+import com.lumina.studio.core.edit.DustMath
 import com.lumina.studio.core.edit.EditMask
+import com.lumina.studio.core.edit.LensBlurMath
+import com.lumina.studio.core.edit.LensBlurParams
+import com.lumina.studio.core.edit.RetouchMath
+import com.lumina.studio.core.edit.RetouchOp
 import com.lumina.studio.core.edit.EditParams
 import com.lumina.studio.core.edit.GeometryMath
 import com.lumina.studio.core.edit.GradeHsl
@@ -169,6 +175,15 @@ object PreviewRenderer {
     // the pre-warp frame; the perspective warp then resamples the graded
     // frame and the crop cut applies in the post-warp frame (same frame the
     // CropOverlay maps to screen pixels).
+    //
+    // M8 (§26-28, §79 honest local scope, §85 order): retouch runs AFTER
+    // masks (spot edits on masked/graded pixels) and BEFORE geometry/crop;
+    // lens blur runs AFTER retouch and BEFORE geometry. Both early-out when
+    // default (empty op list / amount 0) and carry no StepKey toggle — they
+    // always render when non-default. All three features are local,
+    // heuristic approximations (no AI, no depth sensor); see applyRetouch /
+    // applyLensBlur / detectDustCandidates. Retouch/lens coordinates are
+    // fractions of the pre-geometry frame, same frame as masks.
     fun render(
         src: Bitmap,
         params: EditParams,
@@ -251,6 +266,24 @@ object PreviewRenderer {
         }
         if (params.masks.isNotEmpty() && steps.get(StepKey.MASKS)) {
             val out = applyMasks(current, params, quality)
+            if (out !== current) {
+                if (current !== src) current.recycle()
+                current = out
+            }
+        }
+        // M8: retouch AFTER masks, BEFORE geometry. No step gate (always
+        // renders when non-default); early-out inside applyRetouch.
+        if (params.retouch.isNotEmpty()) {
+            val out = applyRetouch(current, params.retouch, quality)
+            if (out !== current) {
+                if (current !== src) current.recycle()
+                current = out
+            }
+        }
+        // M8: lens blur AFTER retouch, BEFORE geometry. Heuristic depth
+        // blur (NOT AI); early-out inside applyLensBlur at amount 0.
+        if (!params.lensBlur.isDefault()) {
+            val out = applyLensBlur(current, params.lensBlur, quality)
             if (out !== current) {
                 if (current !== src) current.recycle()
                 current = out
@@ -849,6 +882,479 @@ object PreviewRenderer {
         val x = (fx + 0.5f).toInt().coerceIn(0, w - 1)
         val y = (fy + 0.5f).toInt().coerceIn(0, h - 1)
         return pixels[y * w + x]
+    }
+
+    /**
+     * M8 retouch (§26, honest local scope): HEAL blends the surrounding
+     * annulus median color with the target's luminance detail (approx, best
+     * on smooth areas); CLONE copies the source disc with a feathered edge;
+     * ERASE is bounded onion-peel inpaint (beta, preview-size only) with an
+     * annulus-median fallback for unfilled interiors. Runs AFTER masks and
+     * BEFORE geometry. Early-out (returns [src]) when [ops] is empty or no
+     * op touches pixels.
+     */
+    fun applyRetouch(
+        src: Bitmap,
+        ops: List<RetouchOp>,
+        quality: RenderQuality = RenderQuality.PREVIEW
+    ): Bitmap {
+        if (ops.isEmpty()) return src
+        val w = src.width
+        val h = src.height
+        if (w <= 0 || h <= 0) return src
+        return try {
+            val total = w * h
+            val pixels = IntArray(total)
+            src.getPixels(pixels, 0, w, 0, 0, w, h)
+            val minDim = minOf(w, h).toFloat().coerceAtLeast(1f)
+            var touched = false
+            for (op in ops) {
+                if (op.opacity <= 0.001f) continue
+                val rPx = (op.radius * minDim).coerceAtLeast(1f)
+                if (rPx < 1f) continue
+                val applied = when (op.kind) {
+                    com.lumina.studio.core.edit.RetouchKind.HEAL ->
+                        retouchHealInPlace(pixels, w, h, op, rPx)
+                    com.lumina.studio.core.edit.RetouchKind.CLONE ->
+                        retouchCloneInPlace(pixels, w, h, op, rPx)
+                    com.lumina.studio.core.edit.RetouchKind.ERASE ->
+                        retouchEraseInPlace(pixels, w, h, op, rPx)
+                }
+                touched = touched || applied
+            }
+            if (!touched) return src
+            val out = createWorkingBitmap(w, h, quality)
+            out.setPixels(pixels, 0, w, 0, 0, w, h)
+            out
+        } catch (_: Exception) {
+            src
+        }
+    }
+
+    private fun retouchBounds(
+        cx: Float, cy: Float, rPx: Float, w: Int, h: Int
+    ): IntArray {
+        val px = (cx.coerceIn(0f, 1f) * w)
+        val py = (cy.coerceIn(0f, 1f) * h)
+        val left = (px - rPx - 1f).toInt().coerceIn(0, w - 1)
+        val right = (px + rPx + 1f).toInt().coerceIn(0, w - 1)
+        val top = (py - rPx - 1f).toInt().coerceIn(0, h - 1)
+        val bottom = (py + rPx + 1f).toInt().coerceIn(0, h - 1)
+        return intArrayOf(left, top, right, bottom)
+    }
+
+    private fun retouchAnnulusMedian(
+        pixels: IntArray, w: Int, h: Int,
+        cx: Float, cy: Float, rPx: Float
+    ): FloatArray {
+        val px = cx.coerceIn(0f, 1f) * w
+        val py = cy.coerceIn(0f, 1f) * h
+        val inner = rPx * 1.15f
+        val outer = rPx * 1.9f + 1f
+        val left = (px - outer).toInt().coerceIn(0, w - 1)
+        val right = (px + outer).toInt().coerceIn(0, w - 1)
+        val top = (py - outer).toInt().coerceIn(0, h - 1)
+        val bottom = (py + outer).toInt().coerceIn(0, h - 1)
+        val bw = (right - left + 1).coerceAtLeast(1)
+        val bh = (bottom - top + 1).coerceAtLeast(1)
+        // Stride the ring so the median stays bounded (~1500 samples max).
+        val stride = maxOf(1, ((bw * bh) + 1499) / 1500)
+        val rs = ArrayList<Float>(1024)
+        val gs = ArrayList<Float>(1024)
+        val bs = ArrayList<Float>(1024)
+        var y = top
+        while (y <= bottom) {
+            var x = left
+            while (x <= right) {
+                val dx = x - px
+                val dy = y - py
+                val dist = sqrt(dx * dx + dy * dy)
+                if (dist >= inner && dist <= outer) {
+                    val p = pixels[y * w + x]
+                    rs.add(((p shr 16) and 0xFF) / 255f)
+                    gs.add(((p shr 8) and 0xFF) / 255f)
+                    bs.add((p and 0xFF) / 255f)
+                }
+                x += stride
+            }
+            y += stride
+        }
+        if (rs.isEmpty()) {
+            val p = pixels[(py.toInt().coerceIn(0, h - 1)) * w + px.toInt().coerceIn(0, w - 1)]
+            return floatArrayOf(
+                ((p shr 16) and 0xFF) / 255f,
+                ((p shr 8) and 0xFF) / 255f,
+                (p and 0xFF) / 255f
+            )
+        }
+        return floatArrayOf(
+            RetouchMath.median(rs.toFloatArray()),
+            RetouchMath.median(gs.toFloatArray()),
+            RetouchMath.median(bs.toFloatArray())
+        )
+    }
+
+    private fun retouchHealInPlace(
+        pixels: IntArray, w: Int, h: Int, op: RetouchOp, rPx: Float
+    ): Boolean {
+        val bounds = retouchBounds(op.cx, op.cy, rPx, w, h)
+        val median = retouchAnnulusMedian(pixels, w, h, op.cx, op.cy, rPx)
+        val px = op.cx.coerceIn(0f, 1f) * w
+        val py = op.cy.coerceIn(0f, 1f) * h
+        var touched = false
+        for (y in bounds[1]..bounds[3]) {
+            for (x in bounds[0]..bounds[2]) {
+                val dx = x - px
+                val dy = y - py
+                val dist = sqrt(dx * dx + dy * dy)
+                if (dist > rPx) continue
+                val alpha = RetouchMath.featherAlpha(dist, rPx, op.feather) *
+                    op.opacity.coerceIn(0f, 1f)
+                if (alpha <= 0.001f) continue
+                val i = y * w + x
+                val p = pixels[i]
+                val healed = RetouchMath.healPixel(
+                    ((p shr 16) and 0xFF) / 255f,
+                    ((p shr 8) and 0xFF) / 255f,
+                    (p and 0xFF) / 255f,
+                    median[0], median[1], median[2]
+                )
+                val a = p ushr 24
+                val r = RetouchMath.mix(((p shr 16) and 0xFF) / 255f, healed[0], alpha)
+                val g = RetouchMath.mix(((p shr 8) and 0xFF) / 255f, healed[1], alpha)
+                val b = RetouchMath.mix((p and 0xFF) / 255f, healed[2], alpha)
+                pixels[i] = (a shl 24) or
+                    ((r * 255f + 0.5f).toInt().coerceIn(0, 255) shl 16) or
+                    ((g * 255f + 0.5f).toInt().coerceIn(0, 255) shl 8) or
+                    (b * 255f + 0.5f).toInt().coerceIn(0, 255)
+                touched = true
+            }
+        }
+        return touched
+    }
+
+    private fun retouchCloneInPlace(
+        pixels: IntArray, w: Int, h: Int, op: RetouchOp, rPx: Float
+    ): Boolean {
+        val snapshot = pixels.clone()
+        val bounds = retouchBounds(op.cx, op.cy, rPx, w, h)
+        val tx = op.cx.coerceIn(0f, 1f) * w
+        val ty = op.cy.coerceIn(0f, 1f) * h
+        val sx = op.sx.coerceIn(0f, 1f) * w
+        val sy = op.sy.coerceIn(0f, 1f) * h
+        var touched = false
+        for (y in bounds[1]..bounds[3]) {
+            for (x in bounds[0]..bounds[2]) {
+                val dx = x - tx
+                val dy = y - ty
+                val dist = sqrt(dx * dx + dy * dy)
+                if (dist > rPx) continue
+                val alpha = RetouchMath.featherAlpha(dist, rPx, op.feather) *
+                    op.opacity.coerceIn(0f, 1f)
+                if (alpha <= 0.001f) continue
+                val sPx = sampleNearest(snapshot, w, h, sx + dx, sy + dy)
+                val i = y * w + x
+                val dPx = pixels[i]
+                val a = dPx ushr 24
+                val r = RetouchMath.mix(
+                    ((dPx shr 16) and 0xFF) / 255f,
+                    ((sPx shr 16) and 0xFF) / 255f, alpha
+                )
+                val g = RetouchMath.mix(
+                    ((dPx shr 8) and 0xFF) / 255f,
+                    ((sPx shr 8) and 0xFF) / 255f, alpha
+                )
+                val b = RetouchMath.mix(
+                    (dPx and 0xFF) / 255f, (sPx and 0xFF) / 255f, alpha
+                )
+                pixels[i] = (a shl 24) or
+                    ((r * 255f + 0.5f).toInt().coerceIn(0, 255) shl 16) or
+                    ((g * 255f + 0.5f).toInt().coerceIn(0, 255) shl 8) or
+                    (b * 255f + 0.5f).toInt().coerceIn(0, 255)
+                touched = true
+            }
+        }
+        return touched
+    }
+
+    /**
+     * ERASE (beta): bounded onion-peel diffusion over the target disc, then
+     * feather-blend like the other kinds. Peel passes are capped at
+     * min(radiusPx, 64); any still-masked interior falls back to the annulus
+     * median so large regions always complete. Preview-size only.
+     */
+    private fun retouchEraseInPlace(
+        pixels: IntArray, w: Int, h: Int, op: RetouchOp, rPx: Float
+    ): Boolean {
+        val bounds = retouchBounds(op.cx, op.cy, rPx, w, h)
+        val bw = bounds[2] - bounds[0] + 1
+        val bh = bounds[3] - bounds[1] + 1
+        if (bw <= 0 || bh <= 0) return false
+        val px = op.cx.coerceIn(0f, 1f) * w
+        val py = op.cy.coerceIn(0f, 1f) * h
+        val r = FloatArray(bw * bh)
+        val g = FloatArray(bw * bh)
+        val b = FloatArray(bw * bh)
+        val mask = BooleanArray(bw * bh)
+        for (y in 0 until bh) {
+            for (x in 0 until bw) {
+                val gx = bounds[0] + x
+                val gy = bounds[1] + y
+                val dx = gx - px
+                val dy = gy - py
+                val i = y * bw + x
+                val p = pixels[gy * w + gx]
+                r[i] = ((p shr 16) and 0xFF) / 255f
+                g[i] = ((p shr 8) and 0xFF) / 255f
+                b[i] = (p and 0xFF) / 255f
+                mask[i] = sqrt(dx * dx + dy * dy) <= rPx
+            }
+        }
+        if (!mask.any { it }) return false
+        val passes = rPx.toInt().coerceIn(8, 64)
+        RetouchMath.onionPeelInpaint(r, g, b, mask, bw, bh, passes)
+        // Documented fallback: unfilled interior takes the annulus median.
+        var remainder = false
+        for (m in mask) {
+            if (m) {
+                remainder = true
+                break
+            }
+        }
+        var median = floatArrayOf(0f, 0f, 0f)
+        if (remainder) {
+            median = retouchAnnulusMedian(pixels, w, h, op.cx, op.cy, rPx)
+        }
+        var touched = false
+        for (y in 0 until bh) {
+            for (x in 0 until bw) {
+                val gx = bounds[0] + x
+                val gy = bounds[1] + y
+                val dx = gx - px
+                val dy = gy - py
+                val dist = sqrt(dx * dx + dy * dy)
+                if (dist > rPx) continue
+                val alpha = RetouchMath.featherAlpha(dist, rPx, op.feather) *
+                    op.opacity.coerceIn(0f, 1f)
+                if (alpha <= 0.001f) continue
+                val i = y * bw + x
+                val fr: Float
+                val fg: Float
+                val fb: Float
+                if (mask[i]) {
+                    fr = median[0]; fg = median[1]; fb = median[2]
+                } else {
+                    fr = r[i]; fg = g[i]; fb = b[i]
+                }
+                val gi = gy * w + gx
+                val dPx = pixels[gi]
+                val a = dPx ushr 24
+                val rr = RetouchMath.mix(((dPx shr 16) and 0xFF) / 255f, fr, alpha)
+                val gg = RetouchMath.mix(((dPx shr 8) and 0xFF) / 255f, fg, alpha)
+                val bb = RetouchMath.mix((dPx and 0xFF) / 255f, fb, alpha)
+                pixels[gi] = (a shl 24) or
+                    ((rr * 255f + 0.5f).toInt().coerceIn(0, 255) shl 16) or
+                    ((gg * 255f + 0.5f).toInt().coerceIn(0, 255) shl 8) or
+                    (bb * 255f + 0.5f).toInt().coerceIn(0, 255)
+                touched = true
+            }
+        }
+        return touched
+    }
+
+    /**
+     * M8 lens blur (§27, honest heuristic): depth = distance-from-focus-point
+     * field with transition control (NOT AI, no depth sensor); render blends
+     * 3 box-blur levels (base/mild/strong via downscale-upscale, same cheap
+     * approx family as the luma-NR stage) by smooth depth-band weights. The
+     * focus ellipse (radius [LensBlurParams.focusRadius]) stays sharp.
+     * Early-out (returns [src]) when [blur] is default.
+     */
+    fun applyLensBlur(
+        src: Bitmap,
+        blur: LensBlurParams,
+        quality: RenderQuality = RenderQuality.PREVIEW
+    ): Bitmap {
+        if (blur.isDefault()) return src
+        val w = src.width
+        val h = src.height
+        if (w <= 0 || h <= 0) return src
+        return try {
+            val mild = scaledBlurBitmap(src, LensBlurMath.downscaleFactor(blur.amount, 1))
+            val strong = scaledBlurBitmap(src, LensBlurMath.downscaleFactor(blur.amount, 2))
+            val total = w * h
+            val basePx = IntArray(total)
+            val mildPx = IntArray(total)
+            val strongPx = IntArray(total)
+            src.getPixels(basePx, 0, w, 0, 0, w, h)
+            mild.getPixels(mildPx, 0, w, 0, 0, w, h)
+            strong.getPixels(strongPx, 0, w, 0, 0, w, h)
+            val aspect = (w.toFloat() / h.toFloat().coerceAtLeast(1f))
+                .let { if (it.isFinite() && it > 0f) it else 1f }
+            val out = IntArray(total)
+            for (y in 0 until h) {
+                val ny = if (h > 1) y.toFloat() / (h - 1).toFloat() else 0.5f
+                for (x in 0 until w) {
+                    val nx = if (w > 1) x.toFloat() / (w - 1).toFloat() else 0.5f
+                    val depth = LensBlurMath.depthAt(
+                        nx, ny, blur.focusX, blur.focusY,
+                        blur.focusRadius, blur.transition, aspect
+                    )
+                    val i = y * w + x
+                    if (depth <= 0.001f) {
+                        out[i] = basePx[i]
+                        continue
+                    }
+                    val weights = LensBlurMath.bandWeights(depth)
+                    val bp = basePx[i]
+                    val mp = mildPx[i]
+                    val sp = strongPx[i]
+                    val a = bp ushr 24
+                    val r = (((bp shr 16) and 0xFF) * weights[0] +
+                        ((mp shr 16) and 0xFF) * weights[1] +
+                        ((sp shr 16) and 0xFF) * weights[2] + 0.5f)
+                        .toInt().coerceIn(0, 255)
+                    val g = (((bp shr 8) and 0xFF) * weights[0] +
+                        ((mp shr 8) and 0xFF) * weights[1] +
+                        ((sp shr 8) and 0xFF) * weights[2] + 0.5f)
+                        .toInt().coerceIn(0, 255)
+                    val bl = ((bp and 0xFF) * weights[0] +
+                        (mp and 0xFF) * weights[1] +
+                        (sp and 0xFF) * weights[2] + 0.5f)
+                        .toInt().coerceIn(0, 255)
+                    out[i] = (a shl 24) or (r shl 16) or (g shl 8) or bl
+                }
+            }
+            if (mild !== src) {
+                try {
+                    if (!mild.isRecycled) mild.recycle()
+                } catch (_: Exception) {
+                }
+            }
+            if (strong !== src && strong !== mild) {
+                try {
+                    if (!strong.isRecycled) strong.recycle()
+                } catch (_: Exception) {
+                }
+            }
+            val result = createWorkingBitmap(w, h, quality)
+            result.setPixels(out, 0, w, 0, 0, w, h)
+            result
+        } catch (_: Exception) {
+            src
+        }
+    }
+
+    private fun scaledBlurBitmap(src: Bitmap, factor: Float): Bitmap {
+        val w = src.width
+        val h = src.height
+        if (factor >= 0.999f) return src
+        val f = factor.coerceIn(0.05f, 1f)
+        val sw = (w * f + 0.5f).toInt().coerceIn(1, w)
+        val sh = (h * f + 0.5f).toInt().coerceIn(1, h)
+        if (sw >= w && sh >= h) return src
+        return try {
+            val small = Bitmap.createScaledBitmap(src, sw, sh, true)
+            val up = Bitmap.createScaledBitmap(small, w, h, true)
+            try {
+                if (!small.isRecycled) small.recycle()
+            } catch (_: Exception) {
+            }
+            up
+        } catch (_: Exception) {
+            src
+        }
+    }
+
+    /**
+     * M8 depth-map preview (§27): grayscale rendering of the heuristic depth
+     * field (black = protected focus, white = fully blurred) on a downscaled
+     * copy for the show-depth-map toggle. Reuses the overlay pattern (caller
+     * owns the bitmap). Returns null when blur is default.
+     */
+    fun buildLensDepthPreview(
+        src: Bitmap,
+        blur: LensBlurParams,
+        maxDim: Int = 192
+    ): Bitmap? {
+        if (blur.isDefault()) return null
+        val w = src.width
+        val h = src.height
+        if (w <= 0 || h <= 0) return null
+        return try {
+            val longest = maxOf(w, h)
+            val scale = if (longest <= maxDim) 1f else maxDim.toFloat() / longest.toFloat()
+            val sw = (w * scale + 0.5f).toInt().coerceIn(1, w)
+            val sh = (h * scale + 0.5f).toInt().coerceIn(1, h)
+            val aspect = (sw.toFloat() / sh.toFloat().coerceAtLeast(1f))
+                .let { if (it.isFinite() && it > 0f) it else 1f }
+            val pixels = IntArray(sw * sh)
+            for (y in 0 until sh) {
+                val ny = if (sh > 1) y.toFloat() / (sh - 1).toFloat() else 0.5f
+                for (x in 0 until sw) {
+                    val nx = if (sw > 1) x.toFloat() / (sw - 1).toFloat() else 0.5f
+                    val depth = LensBlurMath.depthAt(
+                        nx, ny, blur.focusX, blur.focusY,
+                        blur.focusRadius, blur.transition, aspect
+                    )
+                    val v = (depth * 255f + 0.5f).toInt().coerceIn(0, 255)
+                    pixels[y * sw + x] = (0xFF shl 24) or (v shl 16) or (v shl 8) or v
+                }
+            }
+            val out = Bitmap.createBitmap(sw, sh, Bitmap.Config.ARGB_8888)
+            out.setPixels(pixels, 0, sw, 0, 0, sw, sh)
+            out
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /**
+     * M8 dust scan (§28, honest subset): luminance-outlier detection on a
+     * downsampled copy (longest side [maxDim]). Returns transient "dust
+     * candidate" spots for INSPECTION — nothing is healed until the user
+     * confirms (confirmed candidates become HEAL ops). No fake claims.
+     */
+    fun detectDustCandidates(
+        src: Bitmap,
+        sensitivity: Float,
+        maxDim: Int = 256
+    ): List<DustCandidate> {
+        val w = src.width
+        val h = src.height
+        if (w <= 0 || h <= 0) return emptyList()
+        return try {
+            val longest = maxOf(w, h)
+            val scale = if (longest <= maxDim) 1f else maxDim.toFloat() / longest.toFloat()
+            val sw = (w * scale + 0.5f).toInt().coerceIn(1, w)
+            val sh = (h * scale + 0.5f).toInt().coerceIn(1, h)
+            val small = if (sw == w && sh == h) src
+            else Bitmap.createScaledBitmap(src, sw, sh, true)
+            try {
+                val total = sw * sh
+                val pixels = IntArray(total)
+                small.getPixels(pixels, 0, sw, 0, 0, sw, sh)
+                val luma = FloatArray(total)
+                for (i in 0 until total) {
+                    val p = pixels[i]
+                    luma[i] = RetouchMath.luma(
+                        ((p shr 16) and 0xFF) / 255f,
+                        ((p shr 8) and 0xFF) / 255f,
+                        (p and 0xFF) / 255f
+                    )
+                }
+                DustMath.detectCandidates(luma, sw, sh, sensitivity)
+            } finally {
+                if (small !== src) {
+                    try {
+                        if (!small.isRecycled) small.recycle()
+                    } catch (_: Exception) {
+                    }
+                }
+            }
+        } catch (_: Exception) {
+            emptyList()
+        }
     }
 
     fun applyMasks(

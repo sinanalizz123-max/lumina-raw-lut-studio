@@ -731,6 +731,118 @@ data class OpticsParams(
     }
 }
 
+/**
+ * M8 retouch model (§26). Local spot edits rendered AFTER masks and BEFORE
+ * geometry (see PreviewRenderer.render): HEAL blends the surrounding-annulus
+ * median color with the target's luminance detail (honest approx, best on
+ * smooth areas); CLONE copies the source disc with a feathered edge;
+ * ERASE is onion-peel inpaint labelled "beta" in UI (preview-size only).
+ *
+ * cx/cy 0..1 is the target center; sx/sy 0..1 is the clone source center
+ * (unused by HEAL, which auto-samples the surrounding ring, and by ERASE,
+ * which needs no source). radius is a fraction of the frame's smaller side.
+ */
+enum class RetouchKind(val label: String) {
+    HEAL("Heal"),
+    CLONE("Clone"),
+    ERASE("Erase (beta)");
+
+    companion object {
+        fun fromKey(key: String?): RetouchKind =
+            entries.firstOrNull { it.name == key } ?: HEAL
+    }
+}
+
+data class RetouchOp(
+    val id: String,
+    val kind: RetouchKind = RetouchKind.HEAL,
+    val cx: Float = 0.5f,
+    val cy: Float = 0.5f,
+    val sx: Float = 0.5f,
+    val sy: Float = 0.5f,
+    val radius: Float = DEFAULT_RADIUS,
+    val feather: Float = 0.5f,
+    val opacity: Float = 1f
+) {
+    fun withCenter(x: Float, y: Float): RetouchOp {
+        val nx = x.coerceIn(0f, 1f)
+        val ny = y.coerceIn(0f, 1f)
+        return if (cx == nx && cy == ny) this else copy(cx = nx, cy = ny)
+    }
+
+    fun withSource(x: Float, y: Float): RetouchOp {
+        val nx = x.coerceIn(0f, 1f)
+        val ny = y.coerceIn(0f, 1f)
+        return if (sx == nx && sy == ny) this else copy(sx = nx, sy = ny)
+    }
+
+    fun withRadius(v: Float): RetouchOp {
+        val c = v.coerceIn(MIN_RADIUS, MAX_RADIUS)
+        return if (radius == c) this else copy(radius = c)
+    }
+
+    fun withFeather(v: Float): RetouchOp {
+        val c = v.coerceIn(0f, 1f)
+        return if (feather == c) this else copy(feather = c)
+    }
+
+    fun withOpacity(v: Float): RetouchOp {
+        val c = v.coerceIn(0f, 1f)
+        return if (opacity == c) this else copy(opacity = c)
+    }
+
+    companion object {
+        const val MIN_RADIUS = 0.005f
+        const val MAX_RADIUS = 0.5f
+        const val DEFAULT_RADIUS = 0.06f
+        // Each op adds a bounded-disc pass on preview size; 32 small spots
+        // stay inside the preview budget (documented perf note in UI).
+        const val MAX_OPS = 32
+    }
+}
+
+/**
+ * M8 lens-blur model (§27). Depth is a radial-gradient-from-focus-point
+ * heuristic with transition control — NOT AI, no depth sensor is used (UI
+ * copy must say so). Rendered AFTER retouch and BEFORE geometry as a
+ * spatially-varying 3-level box blur (cheap bokeh approx). [amount] 0 = off.
+ */
+data class LensBlurParams(
+    val focusX: Float = 0.5f,
+    val focusY: Float = 0.5f,
+    val amount: Float = 0f,
+    val transition: Float = DEFAULT_TRANSITION,
+    val focusRadius: Float = DEFAULT_FOCUS_RADIUS
+) {
+    fun isDefault(): Boolean = amount == 0f
+
+    fun withFocus(x: Float, y: Float): LensBlurParams {
+        val nx = x.coerceIn(0f, 1f)
+        val ny = y.coerceIn(0f, 1f)
+        return if (focusX == nx && focusY == ny) this else copy(focusX = nx, focusY = ny)
+    }
+
+    fun withAmount(v: Float): LensBlurParams {
+        val c = v.coerceIn(0f, 100f)
+        return if (amount == c) this else copy(amount = c)
+    }
+
+    fun withTransition(v: Float): LensBlurParams {
+        val c = v.coerceIn(0f, 1f)
+        return if (transition == c) this else copy(transition = c)
+    }
+
+    fun withFocusRadius(v: Float): LensBlurParams {
+        val c = v.coerceIn(0f, 1f)
+        return if (focusRadius == c) this else copy(focusRadius = c)
+    }
+
+    companion object {
+        const val DEFAULT_TRANSITION = 0.5f
+        const val DEFAULT_FOCUS_RADIUS = 0.25f
+    }
+}
+
 enum class StepKey(val key: String) {
     PRESET("preset"),
     LUT("lut"),
@@ -814,6 +926,8 @@ data class EditParams(
     val grade: GradeParams = GradeParams(),
     val pointColor: PointColorParams = PointColorParams(),
     val optics: OpticsParams = OpticsParams(),
+    val retouch: List<RetouchOp> = emptyList(),
+    val lensBlur: LensBlurParams = LensBlurParams(),
     val steps: StepsEnabled = StepsEnabled()
 ) {
     fun get(control: AdjustControl): Float = when (control) {
@@ -879,7 +993,8 @@ data class EditParams(
     fun isDefault(): Boolean =
         isAdjustsDefault() && isHslDefault() && isCurvesDefault() &&
             isDetailsDefault() && isCropDefault() && isMasksDefault() &&
-            isGradeDefault() && isPointColorDefault() && isOpticsDefault()
+            isGradeDefault() && isPointColorDefault() && isOpticsDefault() &&
+            isRetouchDefault() && isLensBlurDefault()
 
     fun toMap(): Map<String, Float> = AdjustControl.entries.associate { it.key to get(it) }
 
@@ -1115,6 +1230,77 @@ data class EditParams(
         return copy(crop = CropParams())
     }
 
+    fun isRetouchDefault(): Boolean = retouch.isEmpty()
+
+    fun isLensBlurDefault(): Boolean = lensBlur.isDefault()
+
+    fun getRetouch(id: String): RetouchOp? = retouch.firstOrNull { it.id == id }
+
+    fun addRetouch(kind: RetouchKind): EditParams {
+        if (retouch.size >= RetouchOp.MAX_OPS) return this
+        val id = java.util.UUID.randomUUID().toString()
+        return copy(retouch = retouch + RetouchOp(id = id, kind = kind))
+    }
+
+    fun addRetouchAt(kind: RetouchKind, cx: Float, cy: Float): EditParams {
+        if (retouch.size >= RetouchOp.MAX_OPS) return this
+        val id = java.util.UUID.randomUUID().toString()
+        val op = RetouchOp(id = id, kind = kind)
+            .withCenter(cx, cy)
+            .withSource(cx, cy)
+        return copy(retouch = retouch + op)
+    }
+
+    fun removeRetouch(id: String): EditParams {
+        if (retouch.none { it.id == id }) return this
+        return copy(retouch = retouch.filterNot { it.id == id })
+    }
+
+    fun updateRetouch(id: String, transform: (RetouchOp) -> RetouchOp): EditParams {
+        val index = retouch.indexOfFirst { it.id == id }
+        if (index < 0) return this
+        val current = retouch[index]
+        var next = transform(current)
+        next = next.copy(
+            cx = next.cx.coerceIn(0f, 1f),
+            cy = next.cy.coerceIn(0f, 1f),
+            sx = next.sx.coerceIn(0f, 1f),
+            sy = next.sy.coerceIn(0f, 1f),
+            radius = next.radius.coerceIn(RetouchOp.MIN_RADIUS, RetouchOp.MAX_RADIUS),
+            feather = next.feather.coerceIn(0f, 1f),
+            opacity = next.opacity.coerceIn(0f, 1f)
+        )
+        if (next == current) return this
+        val updated = retouch.toMutableList()
+        updated[index] = next
+        return copy(retouch = updated)
+    }
+
+    fun clearRetouch(): EditParams {
+        if (retouch.isEmpty()) return this
+        return copy(retouch = emptyList())
+    }
+
+    fun withLensBlur(lensBlur: LensBlurParams): EditParams =
+        if (this.lensBlur == lensBlur) this else copy(lensBlur = lensBlur)
+
+    fun withLensFocus(x: Float, y: Float): EditParams =
+        withLensBlur(lensBlur.withFocus(x, y))
+
+    fun withLensAmount(v: Float): EditParams =
+        withLensBlur(lensBlur.withAmount(v))
+
+    fun withLensTransition(v: Float): EditParams =
+        withLensBlur(lensBlur.withTransition(v))
+
+    fun withLensFocusRadius(v: Float): EditParams =
+        withLensBlur(lensBlur.withFocusRadius(v))
+
+    fun resetLensBlur(): EditParams {
+        if (lensBlur.isDefault()) return this
+        return copy(lensBlur = LensBlurParams())
+    }
+
     fun getMask(id: String): EditMask? = masks.firstOrNull { it.id == id }
 
     fun addMask(tool: MaskTool): EditParams {
@@ -1329,6 +1515,28 @@ object EditParamsJson {
             sb.append("}")
         }
         sb.append("]")
+        // M8 keys only (new keys appended; old JSON simply lacks them).
+        sb.append(",\"lensFx\":").append(params.lensBlur.focusX)
+        sb.append(",\"lensFy\":").append(params.lensBlur.focusY)
+        sb.append(",\"lensAmount\":").append(params.lensBlur.amount)
+        sb.append(",\"lensTransition\":").append(params.lensBlur.transition)
+        sb.append(",\"lensRadius\":").append(params.lensBlur.focusRadius)
+        sb.append(",\"retouch\":[")
+        params.retouch.forEachIndexed { index, op ->
+            if (index > 0) sb.append(",")
+            sb.append("{")
+            sb.append("\"id\":\"").append(escape(op.id)).append("\"")
+            sb.append(",\"kind\":\"").append(op.kind.name).append("\"")
+            sb.append(",\"cx\":").append(op.cx)
+            sb.append(",\"cy\":").append(op.cy)
+            sb.append(",\"sx\":").append(op.sx)
+            sb.append(",\"sy\":").append(op.sy)
+            sb.append(",\"radius\":").append(op.radius)
+            sb.append(",\"feather\":").append(op.feather)
+            sb.append(",\"opacity\":").append(op.opacity)
+            sb.append("}")
+        }
+        sb.append("]")
         sb.append("}")
         return sb.toString()
     }
@@ -1485,6 +1693,25 @@ object EditParamsJson {
                 params = params.copy(optics = o)
             }
             extractMasks(json)?.let { params = params.copy(masks = it) }
+            // M8 lens keys (missing = pre-M8 JSON defaults: blur off).
+            val lensFx = extractNumber(json, "lensFx")
+            val lensFy = extractNumber(json, "lensFy")
+            val lensAmount = extractNumber(json, "lensAmount")
+            val lensTransition = extractNumber(json, "lensTransition")
+            val lensRadius = extractNumber(json, "lensRadius")
+            if (lensFx != null || lensFy != null || lensAmount != null ||
+                lensTransition != null || lensRadius != null
+            ) {
+                var blur = params.lensBlur
+                lensFx?.let { fx -> blur = blur.withFocus(fx, blur.focusY) }
+                lensFy?.let { fy -> blur = blur.withFocus(blur.focusX, fy) }
+                lensAmount?.let { blur = blur.withAmount(it) }
+                lensTransition?.let { blur = blur.withTransition(it) }
+                lensRadius?.let { blur = blur.withFocusRadius(it) }
+                params = params.copy(lensBlur = blur)
+            }
+            // M8 retouch list (missing = pre-M8 JSON default: empty).
+            extractRetouch(json)?.let { params = params.copy(retouch = it) }
             params
         } catch (_: Exception) {
             EditParams.DEFAULT
@@ -1615,6 +1842,92 @@ object EditParamsJson {
             lumaLo = lumaLo,
             lumaHi = lumaHi,
             lumaFeather = lumaFeather
+        )
+    }
+
+    private fun extractRetouch(json: String): List<RetouchOp>? {
+        val keyToken = "\"retouch\""
+        val keyIndex = json.indexOf(keyToken)
+        if (keyIndex < 0) return null
+        val colon = json.indexOf(':', keyIndex + keyToken.length)
+        if (colon < 0) return null
+        var i = colon + 1
+        while (i < json.length && json[i].isWhitespace()) i++
+        if (i >= json.length || json[i] != '[') return null
+        var depth = 0
+        var end = -1
+        var k = i
+        while (k < json.length) {
+            when (json[k]) {
+                '[' -> depth++
+                ']' -> {
+                    depth--
+                    if (depth == 0) {
+                        end = k
+                        break
+                    }
+                }
+            }
+            k++
+        }
+        if (end < 0) return null
+        val inner = json.substring(i + 1, end).trim()
+        if (inner.isEmpty()) return emptyList()
+        val objects = ArrayList<String>()
+        var braceDepth = 0
+        var inString = false
+        var escaped = false
+        var start = -1
+        var idx = 0
+        while (idx < inner.length) {
+            val c = inner[idx]
+            if (inString) {
+                if (escaped) {
+                    escaped = false
+                } else if (c == '\\') {
+                    escaped = true
+                } else if (c == '"') {
+                    inString = false
+                }
+            } else {
+                when (c) {
+                    '"' -> inString = true
+                    '{' -> {
+                        if (braceDepth == 0) start = idx
+                        braceDepth++
+                    }
+                    '}' -> {
+                        braceDepth--
+                        if (braceDepth == 0 && start >= 0) {
+                            objects.add(inner.substring(start, idx + 1))
+                            start = -1
+                        }
+                    }
+                }
+            }
+            idx++
+        }
+        if (objects.size > RetouchOp.MAX_OPS + 8) {
+            return objects.take(RetouchOp.MAX_OPS + 8).mapNotNull { parseRetouchOp(it) }
+        }
+        return objects.mapNotNull { parseRetouchOp(it) }.take(RetouchOp.MAX_OPS)
+    }
+
+    private fun parseRetouchOp(obj: String): RetouchOp? {
+        val id = extractStringOrNull(obj, "id")?.takeIf { it.isNotBlank() } ?: return null
+        val kind = extractStringOrNull(obj, "kind")?.let { RetouchKind.fromKey(it) } ?: RetouchKind.HEAL
+        val cx = extractNumber(obj, "cx")?.coerceIn(0f, 1f) ?: 0.5f
+        val cy = extractNumber(obj, "cy")?.coerceIn(0f, 1f) ?: 0.5f
+        val sx = extractNumber(obj, "sx")?.coerceIn(0f, 1f) ?: 0.5f
+        val sy = extractNumber(obj, "sy")?.coerceIn(0f, 1f) ?: 0.5f
+        val radius = extractNumber(obj, "radius")
+            ?.coerceIn(RetouchOp.MIN_RADIUS, RetouchOp.MAX_RADIUS) ?: RetouchOp.DEFAULT_RADIUS
+        val feather = extractNumber(obj, "feather")?.coerceIn(0f, 1f) ?: 0.5f
+        val opacity = extractNumber(obj, "opacity")?.coerceIn(0f, 1f) ?: 1f
+        return RetouchOp(
+            id = id, kind = kind, cx = cx, cy = cy,
+            sx = sx, sy = sy, radius = radius,
+            feather = feather, opacity = opacity
         )
     }
 

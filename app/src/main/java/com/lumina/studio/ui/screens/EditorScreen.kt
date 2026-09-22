@@ -35,7 +35,9 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.AutoFixHigh
 import androidx.compose.material.icons.filled.BarChart
+import androidx.compose.material.icons.filled.BlurOn
 import androidx.compose.material.icons.filled.Brush
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ColorLens
@@ -114,6 +116,7 @@ import com.lumina.studio.core.design.theme.LuminaSurfaceContainerLow
 import com.lumina.studio.core.render.PreviewRenderer
 import com.lumina.studio.core.util.ImageFiles
 import com.lumina.studio.navigation.Routes
+import com.lumina.studio.ui.editor.BlurToolPanel
 import com.lumina.studio.ui.editor.ColorToolPanel
 import com.lumina.studio.ui.editor.CropToolPanel
 import com.lumina.studio.ui.editor.CurvesToolPanel
@@ -122,6 +125,7 @@ import com.lumina.studio.ui.editor.EditorTool
 import com.lumina.studio.ui.editor.EditorToolPanel
 import com.lumina.studio.ui.editor.GradeToolPanel
 import com.lumina.studio.ui.editor.MaskToolPanel
+import com.lumina.studio.ui.editor.RetouchToolPanel
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -164,6 +168,15 @@ fun EditorScreen(navController: NavController, projectId: String? = null) {
     val selectedMaskId by vm.selectedMaskId.collectAsState()
     val showMaskOverlay by vm.showMaskOverlay.collectAsState()
     val maskSampleArmedId by vm.maskSampleArmedId.collectAsState()
+    val selectedRetouchId by vm.selectedRetouchId.collectAsState()
+    val retouchMode by vm.retouchMode.collectAsState()
+    val retouchPlaceArmed by vm.retouchPlaceArmed.collectAsState()
+    val cloneSourceArmedId by vm.cloneSourceArmedId.collectAsState()
+    val lensFocusArmed by vm.lensFocusArmed.collectAsState()
+    val showLensDepth by vm.showLensDepth.collectAsState()
+    val lensDepthPreview by vm.lensDepthPreview.collectAsState()
+    val dustCandidates by vm.dustCandidates.collectAsState()
+    val dustSensitivity by vm.dustSensitivity.collectAsState()
     val zoomTile by vm.zoomTile.collectAsState()
     val zoomWarning by vm.zoomWarning.collectAsState()
     val zoomEnhancing by vm.zoomEnhancing.collectAsState()
@@ -527,8 +540,8 @@ fun EditorScreen(navController: NavController, projectId: String? = null) {
                             translationX = offset.x
                             translationY = offset.y
                         }
-                        .transformable(transformState, enabled = !eyedropperArmed && !pointEyedropperArmed && maskSampleArmedId == null)
-                        .pointerInput(eyedropperArmed, pointEyedropperArmed, maskSampleArmedId, displayBitmap, viewportSize) {
+                        .transformable(transformState, enabled = !eyedropperArmed && !pointEyedropperArmed && maskSampleArmedId == null && !retouchPlaceArmed && !lensFocusArmed && cloneSourceArmedId == null)
+                        .pointerInput(eyedropperArmed, pointEyedropperArmed, maskSampleArmedId, activeTool, retouchPlaceArmed, cloneSourceArmedId, lensFocusArmed, displayBitmap, viewportSize) {
                             detectTapGestures(
                                 onDoubleTap = {
                                     vm.toggleFullscreen()
@@ -601,6 +614,26 @@ fun EditorScreen(navController: NavController, projectId: String? = null) {
                                             vm.pointEyedropperPick(bmp.getPixel(bx, by))
                                         } catch (_: Exception) {
                                         }
+                                        return@detectTapGestures
+                                    }
+                                    // M8: clone-source pick wins over placement (second tap
+                                    // sets the source when armed — eyedropper-arm pattern).
+                                    if (cloneSourceArmedId != null) {
+                                        val frac = tapToPhotoFractions(tap, viewportSize, displayBitmap)
+                                        if (frac != null) vm.setCloneSource(cloneSourceArmedId, frac.first, frac.second)
+                                        return@detectTapGestures
+                                    }
+                                    // M8: tap-to-place retouch spots when armed.
+                                    if (retouchPlaceArmed && activeTool == EditorTool.RETOUCH) {
+                                        val frac = tapToPhotoFractions(tap, viewportSize, displayBitmap)
+                                        if (frac != null) vm.placeRetouchAt(frac.first, frac.second)
+                                        return@detectTapGestures
+                                    }
+                                    // M8: tap-to-set lens focus point when armed
+                                    // (heuristic depth blur — not AI).
+                                    if (lensFocusArmed && activeTool == EditorTool.BLUR) {
+                                        val frac = tapToPhotoFractions(tap, viewportSize, displayBitmap)
+                                        if (frac != null) vm.setLensFocus(frac.first, frac.second)
                                         return@detectTapGestures
                                     }
                                     if (!eyedropperArmed) {
@@ -739,6 +772,58 @@ fun EditorScreen(navController: NavController, projectId: String? = null) {
                         if (pcmReady && pcm != null) {
                             Image(
                                 bitmap = pcm.asImageBitmap(),
+                                contentDescription = null,
+                                modifier = Modifier.fillMaxSize(),
+                                contentScale = ContentScale.Fit,
+                                alpha = 0.6f
+                            )
+                        }
+                    }
+                    // M8: retouch spots + dust candidates overlay while the
+                    // RETOUCH tool is active (same frame as MaskOverlay).
+                    if (!effectiveOriginal && activeTool == EditorTool.RETOUCH &&
+                        (params.retouch.isNotEmpty() || dustCandidates.isNotEmpty())
+                    ) {
+                        val bmp = previewBitmap
+                        if (bmp != null) {
+                            RetouchOverlay(
+                                bitmapW = bmp.width,
+                                bitmapH = bmp.height,
+                                ops = params.retouch,
+                                candidates = dustCandidates,
+                                selectedId = selectedRetouchId,
+                                modifier = Modifier.fillMaxSize(),
+                                dragEnabled = !retouchPlaceArmed && cloneSourceArmedId == null,
+                                onSelect = { vm.selectRetouch(it) },
+                                onBeginDrag = { vm.beginRetouchDrag() },
+                                onMove = { id, x, y -> vm.moveRetouchCenterLive(id, x, y) }
+                            )
+                        }
+                    }
+                    // M8: focus ellipse while the BLUR tool is active.
+                    if (!effectiveOriginal && activeTool == EditorTool.BLUR &&
+                        !params.lensBlur.isDefault()
+                    ) {
+                        val bmp = previewBitmap
+                        if (bmp != null) {
+                            BlurFocusOverlay(
+                                bitmapW = bmp.width,
+                                bitmapH = bmp.height,
+                                focusX = params.lensBlur.focusX,
+                                focusY = params.lensBlur.focusY,
+                                focusRadius = params.lensBlur.focusRadius,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        }
+                    }
+                    // M8: heuristic depth-field preview (show-depth-map toggle,
+                    // same overlay pattern as the point-color mask).
+                    if (!effectiveOriginal && showLensDepth) {
+                        val depth = lensDepthPreview
+                        val depthReady = depth != null && runCatching { !depth.isRecycled }.getOrDefault(false)
+                        if (depthReady && depth != null) {
+                            Image(
+                                bitmap = depth.asImageBitmap(),
                                 contentDescription = null,
                                 modifier = Modifier.fillMaxSize(),
                                 contentScale = ContentScale.Fit,
@@ -1184,6 +1269,44 @@ fun EditorScreen(navController: NavController, projectId: String? = null) {
                             maskSampleArmedId = maskSampleArmedId,
                             onArmSample = { vm.armMaskSample(it) }
                         )
+                    } else if (tool == EditorTool.RETOUCH) {
+                        RetouchToolPanel(
+                            params = params,
+                            selectedId = selectedRetouchId,
+                            mode = retouchMode,
+                            placeArmed = retouchPlaceArmed,
+                            cloneSourceArmedId = cloneSourceArmedId,
+                            dustSensitivity = dustSensitivity,
+                            dustCandidates = dustCandidates,
+                            onMode = { vm.setRetouchMode(it) },
+                            onArmPlace = { vm.setRetouchPlaceArmed(it) },
+                            onSelect = { vm.selectRetouch(it) },
+                            onRemove = { vm.removeRetouch(it) },
+                            onCenter = { id, x, y -> vm.setRetouchCenter(id, x, y) },
+                            onRadius = { id, v -> vm.setRetouchRadius(id, v) },
+                            onFeather = { id, v -> vm.setRetouchFeather(id, v) },
+                            onOpacity = { id, v -> vm.setRetouchOpacity(id, v) },
+                            onArmCloneSource = { vm.armCloneSource(it) },
+                            onDustSensitivity = { vm.setDustSensitivity(it) },
+                            onScanDust = { vm.scanDust() },
+                            onToggleCandidate = { vm.toggleDustConfirmed(it) },
+                            onRemoveCandidate = { vm.removeDustCandidate(it) },
+                            onHealConfirmed = { vm.healConfirmedDust() },
+                            onClearCandidates = { vm.clearDustCandidates() },
+                            onResetAll = { vm.resetRetouch() }
+                        )
+                    } else if (tool == EditorTool.BLUR) {
+                        BlurToolPanel(
+                            params = params,
+                            focusArmed = lensFocusArmed,
+                            showDepth = showLensDepth,
+                            onArmFocus = { vm.setLensFocusArmed(it) },
+                            onAmount = { vm.setLensAmount(it) },
+                            onTransition = { vm.setLensTransition(it) },
+                            onFocusRadius = { vm.setLensFocusRadius(it) },
+                            onToggleDepth = { vm.setShowLensDepth(it) },
+                            onReset = { vm.resetLensBlur() }
+                        )
                     } else {
                         EditorToolPanel(tool = tool)
                     }
@@ -1327,6 +1450,8 @@ private fun editorToolIcon(tool: com.lumina.studio.ui.editor.EditorTool): androi
         com.lumina.studio.ui.editor.EditorTool.DETAILS -> Icons.Filled.Grain
         com.lumina.studio.ui.editor.EditorTool.CROP -> Icons.Filled.Crop
         com.lumina.studio.ui.editor.EditorTool.MASK -> Icons.Filled.Brush
+        com.lumina.studio.ui.editor.EditorTool.RETOUCH -> Icons.Filled.AutoFixHigh
+        com.lumina.studio.ui.editor.EditorTool.BLUR -> Icons.Filled.BlurOn
     }
 }
 
@@ -1590,6 +1715,241 @@ private fun cropApplyDelta(
         CropDragMode.NONE -> return rect
     }
     return floatArrayOf(l, t, r, b)
+}
+
+private fun tapToPhotoFractions(
+    tap: Offset,
+    viewportSize: IntSize,
+    bitmap: android.graphics.Bitmap?
+): Pair<Float, Float>? {
+    if (bitmap == null) return null
+    val vw = viewportSize.width.toFloat()
+    val vh = viewportSize.height.toFloat()
+    if (vw <= 0f || vh <= 0f) return null
+    if (runCatching { bitmap.isRecycled }.getOrDefault(true)) return null
+    val bw = bitmap.width.toFloat()
+    val bh = bitmap.height.toFloat()
+    if (bw <= 0f || bh <= 0f) return null
+    val fitScale = minOf(vw / bw, vh / bh)
+    if (fitScale <= 0f || !fitScale.isFinite()) return null
+    val drawnW = bw * fitScale
+    val drawnH = bh * fitScale
+    val left = (vw - drawnW) / 2f
+    val top = (vh - drawnH) / 2f
+    val x = tap.x
+    val y = tap.y
+    if (x < left || x > left + drawnW || y < top || y > top + drawnH) return null
+    return Pair(
+        ((x - left) / drawnW).coerceIn(0f, 1f),
+        ((y - top) / drawnH).coerceIn(0f, 1f)
+    )
+}
+
+@Composable
+private fun RetouchOverlay(
+    bitmapW: Int,
+    bitmapH: Int,
+    ops: List<com.lumina.studio.core.edit.RetouchOp>,
+    candidates: List<com.lumina.studio.core.edit.DustCandidate>,
+    selectedId: String?,
+    modifier: Modifier = Modifier,
+    dragEnabled: Boolean = true,
+    onSelect: (String) -> Unit = {},
+    onBeginDrag: () -> Unit = {},
+    onMove: (String, Float, Float) -> Unit = { _, _, _ -> }
+) {
+    // Drag-to-move mirrors CropOverlay: a down on a spot wins over pan/zoom
+    // (down is consumed), drags outside fall through, a second finger aborts
+    // so pinch-zoom keeps working. One undo push on drag start (onBeginDrag),
+    // live moves skip the push (onMove) — the curves-drag pattern.
+    val latestOps = rememberUpdatedState(ops)
+    val latestSelect = rememberUpdatedState(onSelect)
+    val latestBegin = rememberUpdatedState(onBeginDrag)
+    val latestMove = rememberUpdatedState(onMove)
+    val touchSlopPx = with(LocalDensity.current) { 24.dp.toPx() }
+    val dragModifier = if (dragEnabled && ops.isNotEmpty()) {
+        Modifier.pointerInput(bitmapW, bitmapH) {
+            awaitEachGesture {
+                val down = awaitFirstDown(requireUnconsumed = false)
+                val vw = size.width.toFloat()
+                val vh = size.height.toFloat()
+                if (bitmapW <= 0 || bitmapH <= 0 || vw <= 0f || vh <= 0f) {
+                    return@awaitEachGesture
+                }
+                val fit = minOf(vw / bitmapW.toFloat(), vh / bitmapH.toFloat())
+                if (fit <= 0f || !fit.isFinite()) return@awaitEachGesture
+                val drawnW = bitmapW * fit
+                val drawnH = bitmapH * fit
+                val imgLeft = (vw - drawnW) / 2f
+                val imgTop = (vh - drawnH) / 2f
+                val minDrawn = minOf(drawnW, drawnH)
+                var hit: com.lumina.studio.core.edit.RetouchOp? = null
+                var best = Float.MAX_VALUE
+                for (op in latestOps.value) {
+                    val cx = imgLeft + op.cx.coerceIn(0f, 1f) * drawnW
+                    val cy = imgTop + op.cy.coerceIn(0f, 1f) * drawnH
+                    val r = op.radius.coerceIn(
+                        com.lumina.studio.core.edit.RetouchOp.MIN_RADIUS,
+                        com.lumina.studio.core.edit.RetouchOp.MAX_RADIUS
+                    ) * minDrawn + touchSlopPx
+                    val dx = down.position.x - cx
+                    val dy = down.position.y - cy
+                    val dist = kotlin.math.sqrt(dx * dx + dy * dy)
+                    if (dist <= r && dist < best) {
+                        best = dist
+                        hit = op
+                    }
+                }
+                val target = hit ?: return@awaitEachGesture
+                down.consume()
+                latestSelect.value.invoke(target.id)
+                latestBegin.value.invoke()
+                var liveX = target.cx.coerceIn(0f, 1f)
+                var liveY = target.cy.coerceIn(0f, 1f)
+                val slop = awaitTouchSlopOrCancellation(down.id) { change, over ->
+                    if (change.id != down.id) return@awaitTouchSlopOrCancellation
+                    change.consume()
+                    liveX = (liveX + over.x / drawnW).coerceIn(0f, 1f)
+                    liveY = (liveY + over.y / drawnH).coerceIn(0f, 1f)
+                    latestMove.value.invoke(target.id, liveX, liveY)
+                } ?: return@awaitEachGesture
+                if (slop.id != down.id) return@awaitEachGesture
+                while (true) {
+                    val event = awaitPointerEvent()
+                    if (event.changes.any { it.id != down.id && it.pressed }) {
+                        return@awaitEachGesture
+                    }
+                    val change = event.changes.firstOrNull { it.id == down.id }
+                        ?: return@awaitEachGesture
+                    if (!change.pressed) return@awaitEachGesture
+                    val delta = change.positionChange()
+                    if (delta != Offset.Zero) {
+                        change.consume()
+                        liveX = (liveX + delta.x / drawnW).coerceIn(0f, 1f)
+                        liveY = (liveY + delta.y / drawnH).coerceIn(0f, 1f)
+                        latestMove.value.invoke(target.id, liveX, liveY)
+                    }
+                    if (event.changes.all { !it.pressed }) return@awaitEachGesture
+                }
+            }
+        }
+    } else {
+        Modifier
+    }
+    Canvas(modifier = modifier.then(dragModifier)) {
+        if (bitmapW <= 0 || bitmapH <= 0) return@Canvas
+        if (size.width <= 0f || size.height <= 0f) return@Canvas
+        val fitScale = minOf(size.width / bitmapW.toFloat(), size.height / bitmapH.toFloat())
+        if (fitScale <= 0f || !fitScale.isFinite()) return@Canvas
+        val drawnW = bitmapW * fitScale
+        val drawnH = bitmapH * fitScale
+        val left = (size.width - drawnW) / 2f
+        val top = (size.height - drawnH) / 2f
+        val minDrawn = minOf(drawnW, drawnH)
+        for (op in ops) {
+            val cx = left + op.cx.coerceIn(0f, 1f) * drawnW
+            val cy = top + op.cy.coerceIn(0f, 1f) * drawnH
+            val r = op.radius.coerceIn(
+                com.lumina.studio.core.edit.RetouchOp.MIN_RADIUS,
+                com.lumina.studio.core.edit.RetouchOp.MAX_RADIUS
+            ) * minDrawn
+            val base = when (op.kind) {
+                com.lumina.studio.core.edit.RetouchKind.HEAL -> Color.Green
+                com.lumina.studio.core.edit.RetouchKind.CLONE -> Color.Cyan
+                com.lumina.studio.core.edit.RetouchKind.ERASE -> Color.Magenta
+            }
+            drawCircle(
+                base.copy(alpha = 0.30f),
+                radius = r.coerceAtLeast(2f),
+                center = Offset(cx, cy)
+            )
+            drawCircle(
+                base.copy(alpha = 0.9f),
+                radius = r.coerceAtLeast(2f),
+                center = Offset(cx, cy),
+                style = androidx.compose.ui.graphics.drawscope.Stroke(
+                    width = if (op.id == selectedId) 4f else 2f
+                )
+            )
+            if (op.kind == com.lumina.studio.core.edit.RetouchKind.CLONE) {
+                val sx = left + op.sx.coerceIn(0f, 1f) * drawnW
+                val sy = top + op.sy.coerceIn(0f, 1f) * drawnH
+                drawLine(
+                    base.copy(alpha = 0.9f),
+                    Offset(cx, cy),
+                    Offset(sx, sy),
+                    strokeWidth = 2f
+                )
+                drawCircle(
+                    base.copy(alpha = 0.9f),
+                    radius = (r * 0.6f).coerceAtLeast(2f),
+                    center = Offset(sx, sy),
+                    style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2f)
+                )
+            }
+        }
+        for (candidate in candidates) {
+            val cx = left + candidate.cx.coerceIn(0f, 1f) * drawnW
+            val cy = top + candidate.cy.coerceIn(0f, 1f) * drawnH
+            val r = (candidate.radius * minDrawn).coerceAtLeast(6f)
+            val tint = if (candidate.confirmed) Color.Green else Color.Yellow
+            drawCircle(
+                tint.copy(alpha = 0.9f),
+                radius = r,
+                center = Offset(cx, cy),
+                style = androidx.compose.ui.graphics.drawscope.Stroke(
+                    width = if (candidate.confirmed) 4f else 2f
+                )
+            )
+            if (candidate.confirmed) {
+                drawCircle(tint.copy(alpha = 0.9f), radius = 3f, center = Offset(cx, cy))
+            }
+        }
+    }
+}
+
+@Composable
+private fun BlurFocusOverlay(
+    bitmapW: Int,
+    bitmapH: Int,
+    focusX: Float,
+    focusY: Float,
+    focusRadius: Float,
+    modifier: Modifier = Modifier
+) {
+    Canvas(modifier = modifier) {
+        if (bitmapW <= 0 || bitmapH <= 0) return@Canvas
+        if (size.width <= 0f || size.height <= 0f) return@Canvas
+        val fitScale = minOf(size.width / bitmapW.toFloat(), size.height / bitmapH.toFloat())
+        if (fitScale <= 0f || !fitScale.isFinite()) return@Canvas
+        val drawnW = bitmapW * fitScale
+        val drawnH = bitmapH * fitScale
+        val left = (size.width - drawnW) / 2f
+        val top = (size.height - drawnH) / 2f
+        val cx = left + focusX.coerceIn(0f, 1f) * drawnW
+        val cy = top + focusY.coerceIn(0f, 1f) * drawnH
+        // Protected-focus circle matching the depth field exactly: the model
+        // scales x by (w/h), so depth 0 is (sx-cx)^2+(sy-cy)^2 < (r0*drawnH)^2.
+        val r = (focusRadius.coerceIn(0f, 1f) * drawnH).coerceAtLeast(4f)
+        drawCircle(
+            Color.White.copy(alpha = 0.9f),
+            radius = r,
+            center = Offset(cx, cy),
+            style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2f)
+        )
+        drawLine(
+            Color.White.copy(alpha = 0.9f),
+            Offset(cx - 8f, cy),
+            Offset(cx + 8f, cy),
+            strokeWidth = 2f
+        )
+        drawLine(
+            Color.White.copy(alpha = 0.9f),
+            Offset(cx, cy - 8f),
+            Offset(cx, cy + 8f),
+            strokeWidth = 2f
+        )
+    }
 }
 
 @Composable

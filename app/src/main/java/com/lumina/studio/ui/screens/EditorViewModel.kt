@@ -30,8 +30,11 @@ import com.lumina.studio.core.edit.GradeHsl
 import com.lumina.studio.core.edit.GradeZone
 import com.lumina.studio.core.edit.HslAdjust
 import com.lumina.studio.core.edit.HslColor
+import com.lumina.studio.core.edit.DustCandidate
 import com.lumina.studio.core.edit.MaskPoint
 import com.lumina.studio.core.edit.MaskTool
+import com.lumina.studio.core.edit.RetouchKind
+import com.lumina.studio.core.edit.RetouchOp
 import com.lumina.studio.core.edit.StepKey
 import com.lumina.studio.core.edit.toEditParams
 import com.lumina.studio.core.edit.withEditParams
@@ -156,6 +159,40 @@ class EditorViewModel(application: Application, private val projectId: String?) 
     private val _maskSampleArmedId = MutableStateFlow<String?>(null)
     val maskSampleArmedId: StateFlow<String?> = _maskSampleArmedId.asStateFlow()
 
+    // M8 retouch (§26): per-op spots + placement/source arms. Drag moves
+    // coalesce like curves (beginRetouchDrag pushes one undo, live moves skip
+    // the push); discrete edits push per op.
+    private val _selectedRetouchId = MutableStateFlow<String?>(null)
+    val selectedRetouchId: StateFlow<String?> = _selectedRetouchId.asStateFlow()
+
+    private val _retouchMode = MutableStateFlow(RetouchKind.HEAL)
+    val retouchMode: StateFlow<RetouchKind> = _retouchMode.asStateFlow()
+
+    private val _retouchPlaceArmed = MutableStateFlow(false)
+    val retouchPlaceArmed: StateFlow<Boolean> = _retouchPlaceArmed.asStateFlow()
+
+    private val _cloneSourceArmedId = MutableStateFlow<String?>(null)
+    val cloneSourceArmedId: StateFlow<String?> = _cloneSourceArmedId.asStateFlow()
+
+    // M8 lens blur (§27): heuristic depth blur (NOT AI). Focus arm reuses the
+    // eyedropper-arm pattern; depth preview reuses the overlay pattern.
+    private val _lensFocusArmed = MutableStateFlow(false)
+    val lensFocusArmed: StateFlow<Boolean> = _lensFocusArmed.asStateFlow()
+
+    private val _showLensDepth = MutableStateFlow(false)
+    val showLensDepth: StateFlow<Boolean> = _showLensDepth.asStateFlow()
+
+    private val _lensDepthPreview = MutableStateFlow<Bitmap?>(null)
+    val lensDepthPreview: StateFlow<Bitmap?> = _lensDepthPreview.asStateFlow()
+
+    // M8 dust (§28): transient inspection list (NOT persisted in the recipe).
+    // Confirmed candidates become HEAL ops via healConfirmedDust().
+    private val _dustCandidates = MutableStateFlow<List<DustCandidate>>(emptyList())
+    val dustCandidates: StateFlow<List<DustCandidate>> = _dustCandidates.asStateFlow()
+
+    private val _dustSensitivity = MutableStateFlow(50f)
+    val dustSensitivity: StateFlow<Float> = _dustSensitivity.asStateFlow()
+
     private val _zoomTile = MutableStateFlow<ZoomTile?>(null)
     val zoomTile: StateFlow<ZoomTile?> = _zoomTile.asStateFlow()
 
@@ -256,6 +293,7 @@ class EditorViewModel(application: Application, private val projectId: String?) 
                 _project.value = loaded
                 _params.value = loaded?.toEditParams() ?: EditParams.DEFAULT
                 _selectedMaskId.value = _params.value.masks.lastOrNull()?.id
+                _selectedRetouchId.value = _params.value.retouch.lastOrNull()?.id
                 undoStack.clear()
                 redoStack.clear()
                 syncUndoRedo()
@@ -1168,6 +1206,279 @@ class EditorViewModel(application: Application, private val projectId: String?) 
         schedulePersist()
     }
 
+    fun setRetouchMode(mode: RetouchKind) {
+        _retouchMode.value = mode
+    }
+
+    fun setRetouchPlaceArmed(armed: Boolean) {
+        _retouchPlaceArmed.value = armed
+    }
+
+    fun selectRetouch(id: String?) {
+        if (id != null && _params.value.getRetouch(id) == null) return
+        _selectedRetouchId.value = id
+    }
+
+    fun placeRetouchAt(cx: Float, cy: Float) {
+        val current = _params.value
+        if (current.retouch.size >= RetouchOp.MAX_OPS) return
+        pushUndo(current)
+        redoStack.clear()
+        val next = current.addRetouchAt(_retouchMode.value, cx, cy)
+        _params.value = next
+        _selectedRetouchId.value = next.retouch.lastOrNull()?.id
+        syncUndoRedo()
+        renderPreview()
+        schedulePersist()
+    }
+
+    fun removeRetouch(id: String) {
+        val current = _params.value
+        if (current.getRetouch(id) == null) return
+        pushUndo(current)
+        redoStack.clear()
+        _params.value = current.removeRetouch(id)
+        if (_selectedRetouchId.value == id) {
+            _selectedRetouchId.value = _params.value.retouch.lastOrNull()?.id
+        }
+        if (_cloneSourceArmedId.value == id) _cloneSourceArmedId.value = null
+        syncUndoRedo()
+        renderPreview()
+        schedulePersist()
+    }
+
+    fun updateRetouch(id: String, transform: (RetouchOp) -> RetouchOp) {
+        val current = _params.value
+        val next = current.updateRetouch(id, transform)
+        if (next == current) return
+        pushUndo(current)
+        redoStack.clear()
+        _params.value = next
+        syncUndoRedo()
+        renderPreview()
+        schedulePersist()
+    }
+
+    fun setRetouchCenter(id: String, x: Float, y: Float) =
+        updateRetouch(id) { it.withCenter(x, y) }
+
+    fun setRetouchRadius(id: String, radius: Float) =
+        updateRetouch(id) { it.withRadius(radius) }
+
+    fun setRetouchFeather(id: String, feather: Float) =
+        updateRetouch(id) { it.withFeather(feather) }
+
+    fun setRetouchOpacity(id: String, opacity: Float) =
+        updateRetouch(id) { it.withOpacity(opacity) }
+
+    fun beginRetouchDrag() {
+        pushUndo(_params.value)
+        redoStack.clear()
+        syncUndoRedo()
+    }
+
+    fun moveRetouchCenterLive(id: String, x: Float, y: Float) {
+        val current = _params.value
+        val next = current.updateRetouch(id) { it.withCenter(x, y) }
+        if (next == current) return
+        _params.value = next
+        renderPreview()
+        schedulePersist()
+    }
+
+    fun armCloneSource(id: String?) {
+        if (id != null && _params.value.getRetouch(id) == null) return
+        _cloneSourceArmedId.value = id
+    }
+
+    fun setCloneSource(id: String, sx: Float, sy: Float) {
+        val current = _params.value
+        val next = current.updateRetouch(id) { it.withSource(sx, sy) }
+        _cloneSourceArmedId.value = null
+        if (next == current) return
+        pushUndo(current)
+        redoStack.clear()
+        _params.value = next
+        syncUndoRedo()
+        renderPreview()
+        schedulePersist()
+    }
+
+    fun resetRetouch() {
+        val current = _params.value
+        if (current.isRetouchDefault()) return
+        pushUndo(current)
+        redoStack.clear()
+        _params.value = current.clearRetouch()
+        _selectedRetouchId.value = null
+        _cloneSourceArmedId.value = null
+        syncUndoRedo()
+        renderPreview()
+        schedulePersist()
+    }
+
+    fun setLensFocusArmed(armed: Boolean) {
+        _lensFocusArmed.value = armed
+    }
+
+    fun setLensFocus(x: Float, y: Float) {
+        val current = _params.value
+        val next = current.withLensFocus(x, y)
+        _lensFocusArmed.value = false
+        if (next == current) return
+        pushUndo(current)
+        redoStack.clear()
+        _params.value = next
+        syncUndoRedo()
+        renderPreview()
+        schedulePersist()
+    }
+
+    fun setLensAmount(value: Float) {
+        val current = _params.value
+        val next = current.withLensAmount(value)
+        if (next == current) return
+        pushUndo(current)
+        redoStack.clear()
+        _params.value = next
+        syncUndoRedo()
+        renderPreview()
+        schedulePersist()
+    }
+
+    fun setLensTransition(value: Float) {
+        val current = _params.value
+        val next = current.withLensTransition(value)
+        if (next == current) return
+        pushUndo(current)
+        redoStack.clear()
+        _params.value = next
+        syncUndoRedo()
+        renderPreview()
+        schedulePersist()
+    }
+
+    fun setLensFocusRadius(value: Float) {
+        val current = _params.value
+        val next = current.withLensFocusRadius(value)
+        if (next == current) return
+        pushUndo(current)
+        redoStack.clear()
+        _params.value = next
+        syncUndoRedo()
+        renderPreview()
+        schedulePersist()
+    }
+
+    fun resetLensBlur() {
+        val current = _params.value
+        if (current.isLensBlurDefault()) return
+        pushUndo(current)
+        redoStack.clear()
+        _params.value = current.resetLensBlur()
+        syncUndoRedo()
+        renderPreview()
+        schedulePersist()
+    }
+
+    fun setShowLensDepth(show: Boolean) {
+        _showLensDepth.value = show
+        if (show) {
+            refreshLensDepthPreview()
+        } else {
+            clearLensDepthPreview()
+        }
+    }
+
+    private fun refreshLensDepthPreview() {
+        viewModelScope.launch(Dispatchers.Default) {
+            val src = _preview.value ?: baseBitmap ?: return@launch
+            if (src.isRecycled) return@launch
+            val depth = try {
+                PreviewRenderer.buildLensDepthPreview(src, _params.value.lensBlur)
+            } catch (_: Exception) {
+                null
+            }
+            val old = _lensDepthPreview.value
+            _lensDepthPreview.value = depth
+            recycleMaskBitmap(old)
+        }
+    }
+
+    private fun clearLensDepthPreview() {
+        val old = _lensDepthPreview.value
+        _lensDepthPreview.value = null
+        recycleMaskBitmap(old)
+    }
+
+    fun setDustSensitivity(value: Float) {
+        _dustSensitivity.value = value.coerceIn(0f, 100f)
+    }
+
+    fun scanDust() {
+        viewModelScope.launch(Dispatchers.Default) {
+            val src = _preview.value ?: baseBitmap ?: return@launch
+            if (src.isRecycled) return@launch
+            val found = try {
+                PreviewRenderer.detectDustCandidates(src, _dustSensitivity.value)
+            } catch (_: Exception) {
+                emptyList()
+            }
+            _dustCandidates.value = found
+        }
+    }
+
+    fun toggleDustConfirmed(id: String) {
+        val current = _dustCandidates.value
+        val index = current.indexOfFirst { it.id == id }
+        if (index < 0) return
+        val updated = current.toMutableList()
+        val candidate = updated[index]
+        updated[index] = candidate.copy(confirmed = !candidate.confirmed)
+        _dustCandidates.value = updated
+    }
+
+    fun removeDustCandidate(id: String) {
+        val current = _dustCandidates.value
+        if (current.none { it.id == id }) return
+        _dustCandidates.value = current.filterNot { it.id == id }
+    }
+
+    fun clearDustCandidates() {
+        if (_dustCandidates.value.isEmpty()) return
+        _dustCandidates.value = emptyList()
+    }
+
+    fun healConfirmedDust() {
+        val confirmed = _dustCandidates.value.filter { it.confirmed }
+        if (confirmed.isEmpty()) return
+        val current = _params.value
+        val room = RetouchOp.MAX_OPS - current.retouch.size
+        if (room <= 0) return
+        pushUndo(current)
+        redoStack.clear()
+        var next = current
+        for (candidate in confirmed.take(room)) {
+            if (next.retouch.size >= RetouchOp.MAX_OPS) break
+            var added = next.addRetouchAt(
+                RetouchKind.HEAL, candidate.cx, candidate.cy
+            )
+            val id = added.retouch.lastOrNull()?.id
+            if (id != null) {
+                added = added.updateRetouch(id) {
+                    it.withRadius((candidate.radius * 3f).coerceIn(RetouchOp.MIN_RADIUS, 0.2f))
+                }
+            }
+            next = added
+        }
+        _params.value = next
+        _selectedRetouchId.value = next.retouch.lastOrNull()?.id
+        _dustCandidates.value = _dustCandidates.value.filterNot { it.confirmed }
+        syncUndoRedo()
+        renderPreview()
+        schedulePersist()
+    }
+
     fun setShowMaskOverlay(show: Boolean) {
         _showMaskOverlay.value = show
     }
@@ -1351,6 +1662,28 @@ class EditorViewModel(application: Application, private val projectId: String?) 
             } else if (_pointColorMask.value != null) {
                 val old = _pointColorMask.value
                 _pointColorMask.value = null
+                recycleMaskBitmap(old)
+            }
+            // M8 lens depth overlay: rebuilt from the latest rendered frame
+            // while the toggle is on; cleared otherwise so a stale field
+            // never lingers.
+            if (_showLensDepth.value && !params.isLensBlurDefault()) {
+                val graded = out ?: base
+                val depth = if (graded != null && !graded.isRecycled) {
+                    try {
+                        PreviewRenderer.buildLensDepthPreview(graded, params.lensBlur)
+                    } catch (_: Exception) {
+                        null
+                    }
+                } else {
+                    null
+                }
+                val old = _lensDepthPreview.value
+                _lensDepthPreview.value = depth
+                recycleMaskBitmap(old)
+            } else if (_lensDepthPreview.value != null) {
+                val old = _lensDepthPreview.value
+                _lensDepthPreview.value = null
                 recycleMaskBitmap(old)
             }
         }
@@ -1790,6 +2123,8 @@ class EditorViewModel(application: Application, private val projectId: String?) 
         _zoomTile.value = null
         recycleMaskBitmap(_pointColorMask.value)
         _pointColorMask.value = null
+        recycleMaskBitmap(_lensDepthPreview.value)
+        _lensDepthPreview.value = null
         closeRegionDecoder()
         try {
             _fullscreenPreview.value?.takeIf { !it.isRecycled }?.recycle()

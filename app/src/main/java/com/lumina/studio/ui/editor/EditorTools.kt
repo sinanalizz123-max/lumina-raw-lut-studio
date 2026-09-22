@@ -8,5 +8,7 @@ enum class EditorTool(val title: String) {
     CURVES("Curves"),
     DETAILS("Details"),
     CROP("Crop"),
-    MASK("Mask")
+    MASK("Mask"),
+    RETOUCH("Retouch"),
+    BLUR("Blur")
 }

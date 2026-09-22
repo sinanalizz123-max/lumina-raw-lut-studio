@@ -63,6 +63,8 @@ private enum class HistoryStep(
     CURVES("Curves", EditorTool.CURVES, StepKey.CURVES),
     DETAILS("Details", EditorTool.DETAILS, StepKey.DETAILS),
     MASKS("Masks", EditorTool.MASK, StepKey.MASKS),
+    RETOUCH("Retouch", EditorTool.RETOUCH, null),
+    LENS_BLUR("Lens blur", EditorTool.BLUR, null),
     CROP("Crop", EditorTool.CROP, StepKey.CROP);
 
     fun isActive(params: EditParams): Boolean = when (this) {
@@ -74,6 +76,8 @@ private enum class HistoryStep(
         CURVES -> !params.isCurvesDefault()
         DETAILS -> !params.isDetailsDefault()
         MASKS -> params.masks.isNotEmpty()
+        RETOUCH -> params.retouch.isNotEmpty()
+        LENS_BLUR -> !params.isLensBlurDefault()
         CROP -> !params.isCropDefault()
     }
 
@@ -86,6 +90,8 @@ private enum class HistoryStep(
         CURVES -> if (params.isCurvesDefault()) "Empty — diagonal" else "Custom curves"
         DETAILS -> if (params.isDetailsDefault()) "Empty" else "Texture/clarity/NR"
         MASKS -> if (params.masks.isEmpty()) "Empty" else "${params.masks.size} mask(s)"
+        RETOUCH -> if (params.retouch.isEmpty()) "Empty" else "${params.retouch.size} spot(s)"
+        LENS_BLUR -> if (params.isLensBlurDefault()) "Empty — off" else "Amount ${params.lensBlur.amount.roundToInt()}%"
         CROP -> if (params.isCropDefault()) "Empty — free" else "${params.crop.ratio.label} • ${params.crop.rotationSteps * 90}°"
     }
 }
