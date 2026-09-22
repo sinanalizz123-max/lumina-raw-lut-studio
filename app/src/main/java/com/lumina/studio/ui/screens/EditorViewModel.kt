@@ -358,6 +358,31 @@ class EditorViewModel(application: Application, private val projectId: String?) 
         loadJob = viewModelScope.launch {
             try {
                 _loading.value = true
+                // A reload/project switch must not expose pixels from the previous
+                // project. Stop consumers before releasing their bitmaps so a
+                // blocking render cannot race a recycle.
+                renderJob?.cancel()
+                fullscreenJob?.cancel()
+                histogramJob?.cancel()
+                tileJob?.cancel()
+                runCatching { renderJob?.join() }
+                runCatching { fullscreenJob?.join() }
+                runCatching { histogramJob?.join() }
+                runCatching { tileJob?.join() }
+                renderJob = null
+                fullscreenJob = null
+                histogramJob = null
+                tileJob = null
+                baseBitmap?.let { old -> runCatching { if (!old.isRecycled) old.recycle() } }
+                baseBitmap = null
+                _preview.value?.let { old -> runCatching { if (!old.isRecycled) old.recycle() } }
+                _preview.value = null
+                _fullscreenPreview.value?.let { old -> runCatching { if (!old.isRecycled) old.recycle() } }
+                _fullscreenPreview.value = null
+                recycleMaskBitmap(_pointColorMask.value)
+                _pointColorMask.value = null
+                recycleMaskBitmap(_lensDepthPreview.value)
+                _lensDepthPreview.value = null
                 _loadCancelled.value = false
                 _largeDecoding.value = false
                 _isLargeImage.value = false
