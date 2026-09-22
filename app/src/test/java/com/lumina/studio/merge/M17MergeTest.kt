@@ -307,7 +307,7 @@ class M17MergeTest {
 
         val shift = AlignMath.estimateShift(lumaDark, lumaBright, w, h, 8, 8)
         // Aligning convention (see test above): applied motion was (3, 1).
-        assertTrue(abs(shift.dx + 3) <= 1 && abs(shift.dy - 1) <= 1)
+        assertTrue(abs(shift.dx + 3) <= 1 && abs(shift.dy + 1) <= 1)
 
         val alignedBright = AlignMath.applyShiftRgb(brightShifted, w, h, shift.dx, shift.dy)
         val progress = ArrayList<Float>()
