@@ -143,6 +143,21 @@ class ExportWorkflowTest {
         assertEquals(0L, Exporter.estimateTiffBytes(0, 10))
     }
 
+    @Test
+    fun `requestedDecodeMaxDim only caps when source is larger`() {
+        val settings = ExportSettings(
+            resolutionMode = com.lumina.studio.core.export.ResolutionMode.CUSTOM,
+            customMaxDim = 2048
+        )
+        assertEquals(2048, Exporter.requestedDecodeMaxDim(6000, 4000, settings))
+        assertEquals(3000, Exporter.requestedDecodeMaxDim(3000, 2000, settings))
+
+        val longest = settings.copy(longestEdge = 1500)
+        assertEquals(1500, Exporter.requestedDecodeMaxDim(6000, 4000, longest))
+        assertEquals(2000, Exporter.requestedDecodeMaxDim(2000, 1500, longest))
+        assertEquals(2000, Exporter.requestedDecodeMaxDim(2000, 1500, longest.copy(allowUpscale = true)))
+    }
+
     // ---------- PreviewRenderer preview gating (pure) ----------
 
     @Test
