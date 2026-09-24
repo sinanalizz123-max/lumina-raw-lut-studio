@@ -188,6 +188,33 @@ object Exporter {
     fun estimateTiffBytes(width: Int, height: Int): Long =
         TiffWriter.estimateBytes(width, height)
 
+    /**
+     * Returns a decode ceiling when export settings request a downscaled result.
+     * A value of 0 means the source must be decoded at native resolution.
+     * This is intentionally based only on declared source dimensions; when
+     * dimensions are unknown, callers should use the decoded bitmap dimensions.
+     */
+    fun requestedDecodeMaxDim(
+        sourceW: Int?,
+        sourceH: Int?,
+        settings: ExportSettings
+    ): Int {
+        val w = sourceW ?: return 0
+        val h = sourceH ?: return 0
+        if (w <= 0 || h <= 0) return 0
+        if (settings.longestEdge > LONGEST_EDGE_OFF) {
+            val cap = settings.longestEdge.coerceIn(MIN_LONGEST_EDGE, MAX_LONGEST_EDGE)
+            if (settings.allowUpscale || maxOf(w, h) > cap) return cap
+            return maxOf(w, h)
+        }
+        if (settings.resolutionMode == ResolutionMode.CUSTOM) {
+            val cap = settings.customMaxDim.coerceIn(MIN_CUSTOM_DIM, MAX_CUSTOM_DIM)
+            if (maxOf(w, h) > cap) return cap
+        }
+        return maxOf(w, h)
+    }
+
+
     fun formatBytes(bytes: Long): String {
         if (bytes <= 0L) return "–"
         return when {
