@@ -108,12 +108,15 @@ object BatchExporter {
         var sharpened: Bitmap? = null
         try {
             ensureActive()
-            full = decodeFull(app, source)
+            val baseW = project.width.takeIf { it > 0 }
+            val baseH = project.height.takeIf { it > 0 }
+            val requestedMaxDim = Exporter.requestedDecodeMaxDim(baseW, baseH, settings)
+            full = decodeForExport(app, source, requestedMaxDim)
                 ?: throw IllegalStateException("Could not decode “${project.name}”")
             ensureActive()
-            val baseW = project.width.takeIf { it > 0 } ?: full.width
-            val baseH = project.height.takeIf { it > 0 } ?: full.height
-            val (targetW, targetH) = Exporter.targetDimensions(baseW, baseH, settings)
+            val actualBaseW = baseW ?: full.width
+            val actualBaseH = baseH ?: full.height
+            val (targetW, targetH) = Exporter.targetDimensions(actualBaseW, actualBaseH, settings)
             val lut = com.lumina.studio.core.lut.LutRegistry.resolve(params.presetId)
             // M15 (§11): batch exports are export-final too — same GPU-first
             // opt-in as ExportScreen (toggle ON + GLES3), CPU otherwise.
@@ -172,34 +175,63 @@ object BatchExporter {
             uri
         } finally {
             runCatching { sharpened?.takeIf { it !== full }?.recycle() }
-            runCatching { spaced?.takeIf { it !== full }?.recycle() }
-            runCatching { rendered?.takeIf { it !== full }?.recycle() }
-            runCatching { full?.recycle() }
-        }
-    }
-
-    private fun decodeFull(appContext: Context, pathOrUri: String): Bitmap? {
+            private fun decodeForExport(
+        appContext: Context,
+        pathOrUri: String,
+        maxDim: Int
+    ): Bitmap? {
         return try {
             if (isDngPath(pathOrUri)) {
                 val developed = runCatching {
                     RenderBackends.raw(appContext).develop(
-                        RenderSource.of(pathOrUri), 0, RawRecipe()
+                        RenderSource.of(pathOrUri),
+                        maxDim.coerceAtLeast(0),
+                        RawRecipe()
                     )
                 }.getOrNull()
                 if (developed != null) return developed
             }
             val file = File(pathOrUri)
-            if (file.exists()) {
-                val opts = BitmapFactory.Options().apply { inPreferredConfig = Bitmap.Config.ARGB_8888 }
+            if (file.isFile) {
+                val opts = BitmapFactory.Options().apply {
+                    inPreferredConfig = Bitmap.Config.ARGB_8888
+                }
+                if (maxDim > 0) {
+                    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                    BitmapFactory.decodeFile(file.absolutePath, bounds)
+                    inSampleSize = com.lumina.studio.core.render.MemoryBudget.sampleFor(
+                        maxOf(bounds.outWidth, bounds.outHeight), maxDim
+                    )
+                }
                 val decoded = BitmapFactory.decodeFile(file.absolutePath, opts) ?: return null
                 ImageOrientation.normalizeBitmap(decoded, ImageOrientation.orientationOf(file))
             } else {
-                appContext.contentResolver.openInputStream(pathOrUri.toUri())?.use { input ->
-                    val opts = BitmapFactory.Options().apply { inPreferredConfig = Bitmap.Config.ARGB_8888 }
+                val uri = pathOrUri.toUri()
+                val resolver = appContext.contentResolver
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                resolver.openInputStream(uri)?.use { input ->
+                    BitmapFactory.decodeStream(input, null, bounds)
+                }
+                if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+                val opts = BitmapFactory.Options().apply {
+                    inPreferredConfig = Bitmap.Config.ARGB_8888
+                    if (maxDim > 0) {
+                        inSampleSize = com.lumina.studio.core.render.MemoryBudget.sampleFor(
+                            maxOf(bounds.outWidth, bounds.outHeight), maxDim
+                        )
+                    }
+                }
+                resolver.openInputStream(uri)?.use { input ->
                     BitmapFactory.decodeStream(input, null, opts)
                 }
             }
         } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
+            null
+        } catch (_: OutOfMemoryError) {
+            null
+        }
+    }tch (e: Exception) {
             // M11 (§39): never swallow cancellation on export paths.
             if (e is kotlinx.coroutines.CancellationException) throw e
             null

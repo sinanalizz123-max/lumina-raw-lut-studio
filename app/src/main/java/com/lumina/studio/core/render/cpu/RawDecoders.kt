@@ -57,17 +57,21 @@ class DngPreviewDecoder(private val appContext: Context) : RawDecoder<Bitmap> {
         return when (source) {
             is RenderSource.File -> PreviewRenderer.decodePreview(source.path, maxDim)
             is RenderSource.Content -> {
-                val decoded = try {
-                    appContext.contentResolver.openInputStream(source.uri.toUri())?.use { input ->
-                        val opts = BitmapFactory.Options().apply {
-                            inPreferredConfig = Bitmap.Config.ARGB_8888
-                        }
-                        BitmapFactory.decodeStream(input, null, opts)
-                    }
-                } catch (_: Exception) {
-                    null
+                if (maxDim <= 0) return@when null
+                val resolver = appContext.contentResolver
+                val parsed = source.uri.toUri()
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                resolver.openInputStream(parsed)?.use { input ->
+                    BitmapFactory.decodeStream(input, null, bounds)
                 }
-                if (decoded == null) null else fitWithin(decoded, maxDim)
+                if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return@when null
+                resolver.openInputStream(parsed)?.use { input ->
+                    BitmapFactory.decodeStream(
+                        input,
+                        null,
+                        sampledOptions(bounds.outWidth, bounds.outHeight, maxDim)
+                    )
+                }
             }
         }
     }
@@ -86,6 +90,16 @@ class DngPreviewDecoder(private val appContext: Context) : RawDecoder<Bitmap> {
             }
         } catch (_: Exception) {
             null
+        }
+    }
+
+    private fun sampledOptions(width: Int, height: Int, maxDim: Int): BitmapFactory.Options {
+        val sample = com.lumina.studio.core.render.MemoryBudget.sampleFor(
+            maxOf(width, height), maxDim
+        )
+        return BitmapFactory.Options().apply {
+            inSampleSize = sample
+            inPreferredConfig = Bitmap.Config.ARGB_8888
         }
     }
 
