@@ -41,7 +41,18 @@ class MigrationsTest {
             "fallbackToDestructiveMigration must be gone",
             !src.contains("fallbackToDestructiveMigration")
         )
-        assertTrue("corrupt DB must be backed up before recreate", src.contains("backupCorruptFiles"))
+        assertTrue(
+            "live database must never be auto-deleted",
+            !src.contains("deleteDatabaseFiles")
+        )
+        assertTrue(
+            "open failures must surface as typed unavailable errors",
+            src.contains("DatabaseUnavailableException")
+        )
+        assertTrue(
+            "failures must be classified, not treated as one bucket",
+            src.contains("DatabaseFailureClassifier")
+        )
     }
 
     @Test
@@ -62,9 +73,18 @@ class MigrationsTest {
         val modern = mainFile("src/main/res/xml/data_extraction_rules.xml")
         for (xml in listOf(legacy, modern)) {
             assertTrue(xml.contains("<include domain=\"database\""))
-            assertTrue(xml.contains("<include domain=\"file\" path=\"projects\""))
             assertTrue(xml.contains("<include domain=\"file\" path=\"luts\""))
+            // Positive-include policy: lint rejects <exclude> outside included
+            // paths, so exclusions are expressed by simply not including.
+            assertTrue(!xml.contains("<exclude"))
         }
+        // Originals must not ride along with cloud backup (quota), but must
+        // migrate with device-to-device transfer (source media follows the DB).
+        assertTrue(!legacy.contains("path=\"projects\""))
+        val cloud = modern.substringBefore("<device-transfer>")
+        val d2d = modern.substringAfter("<device-transfer>")
+        assertTrue(!cloud.contains("path=\"projects\""))
+        assertTrue(d2d.contains("<include domain=\"file\" path=\"projects\""))
     }
 
     @Test

@@ -3,6 +3,8 @@
     set only; original camera files are excluded because they can exceed cloud
     quota. Device-to-device transfer includes projects so source media migrates
     with the database; restore must still report any missing originals.
+    No <exclude> elements: once <include> is used, anything not listed is
+    already excluded, and lint rejects excludes outside included paths.
     TODO: move previews/thumbnails under projects/&lt;id&gt;/derived/ so D2D can
     exclude regenerable files; backup paths do not support wildcards. -->
 <data-extraction-rules>
@@ -11,10 +13,6 @@
         <include domain="sharedpref" path="." />
         <include domain="file" path="datastore" />
         <include domain="file" path="luts" />
-        <exclude domain="file" path="projects" />
-        <exclude domain="file" path=".trash" />
-        <exclude domain="file" path="db-backup" />
-        <exclude domain="file" path="db-recovery" />
     </cloud-backup>
     <device-transfer>
         <include domain="database" path="." />
@@ -22,8 +20,5 @@
         <include domain="file" path="datastore" />
         <include domain="file" path="luts" />
         <include domain="file" path="projects" />
-        <exclude domain="file" path=".trash" />
-        <exclude domain="file" path="db-backup" />
-        <exclude domain="file" path="db-recovery" />
     </device-transfer>
 </data-extraction-rules>
