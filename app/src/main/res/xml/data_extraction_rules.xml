@@ -3,7 +3,7 @@
     set only; original camera files are excluded because they can exceed cloud
     quota. Device-to-device transfer includes projects so source media migrates
     with the database; restore must still report any missing originals.
-    No <exclude> elements: once <include> is used, anything not listed is
+    No exclude elements are used: once include is used, anything not listed is
     already excluded, and lint rejects excludes outside included paths.
     TODO: move previews/thumbnails under projects/&lt;id&gt;/derived/ so D2D can
     exclude regenerable files; backup paths do not support wildcards. -->

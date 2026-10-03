@@ -2,8 +2,8 @@
 <!-- Auto Backup (API 23-30): narrow durable set only. Projects are intentionally
     not included here because original camera files can exceed the Auto Backup
     quota; restore must report missing source media instead of pretending the
-    originals were cloud-backed. No <exclude> elements: once <include> is used,
-    anything not listed is already excluded. -->
+    originals were cloud-backed. No exclude elements are used: once include is
+    used, anything not listed is already excluded. -->
 <full-backup-content>
     <include domain="database" path="." />
     <include domain="sharedpref" path="." />
