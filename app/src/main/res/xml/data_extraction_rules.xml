@@ -1,20 +1,29 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Backup + device transfer (API 31+): only durable data is included. The
-    cache dir is never backed up by the platform, and all disposable previews,
-    thumbnails and temporary files live only there (see ProjectStore). -->
+<!-- Backup + device transfer (API 31+). Cloud backup keeps the narrow durable
+    set only; original camera files are excluded because they can exceed cloud
+    quota. Device-to-device transfer includes projects so source media migrates
+    with the database; restore must still report any missing originals.
+    TODO: move previews/thumbnails under projects/&lt;id&gt;/derived/ so D2D can
+    exclude regenerable files; backup paths do not support wildcards. -->
 <data-extraction-rules>
     <cloud-backup>
         <include domain="database" path="." />
-        <include domain="file" path="projects" />
-        <include domain="file" path="luts" />
-        <include domain="file" path="datastore" />
         <include domain="sharedpref" path="." />
+        <include domain="file" path="datastore" />
+        <include domain="file" path="luts" />
+        <exclude domain="file" path="projects" />
+        <exclude domain="file" path=".trash" />
+        <exclude domain="file" path="db-backup" />
+        <exclude domain="file" path="db-recovery" />
     </cloud-backup>
     <device-transfer>
         <include domain="database" path="." />
-        <include domain="file" path="projects" />
-        <include domain="file" path="luts" />
-        <include domain="file" path="datastore" />
         <include domain="sharedpref" path="." />
+        <include domain="file" path="datastore" />
+        <include domain="file" path="luts" />
+        <include domain="file" path="projects" />
+        <exclude domain="file" path=".trash" />
+        <exclude domain="file" path="db-backup" />
+        <exclude domain="file" path="db-recovery" />
     </device-transfer>
 </data-extraction-rules>
